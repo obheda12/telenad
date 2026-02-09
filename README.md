@@ -33,118 +33,19 @@ This project implements **Option A** from a comprehensive security analysis: usi
 
 ## Architecture Overview
 
-### System Context (C4 Level 1)
+The system has three actors: **You** (local access via REPL/SSH), the **IronClaw Agent** (running on your Raspberry Pi), and the **Telegram API** (external, read-only access over HTTPS).
 
-```mermaid
-C4Context
-    title System Context - Secure Telegram Agent
+Within the Raspberry Pi, the components are:
 
-    Person(user, "User", "Interacts via local REPL/SSH")
+- **IronClaw Runtime** (Rust) — Agent orchestration and LLM reasoning
+- **WASM Sandbox** (wasmtime) — Contains the Telegram Tool (read-only: `getUpdates`, `getMe`, `getChat`; 45+ write methods blocked) and a Local Notes Tool (`~/ironclaw-notes` only)
+- **Host Boundary Layer** (Rust) — HTTP allowlist enforcement, leak detection, credential injection
+- **Secrets Manager** (System Keychain) — AES-256-GCM encrypted credentials
+- **PostgreSQL + pgvector** — Message history, embeddings, audit logs
 
-    System_Boundary(pi, "Raspberry Pi") {
-        System(ironclaw, "IronClaw Agent", "AI agent with WASM sandbox, processes queries about Telegram messages")
-    }
+The key data flow: WASM tools make HTTP requests **without credentials**. The Host Boundary Layer checks the URL allowlist, scans for leaks, fetches the token from the keychain, injects it, and forwards the request to Telegram over TLS 1.3. Responses are scanned and sanitized before returning to the sandbox.
 
-    System_Ext(telegram, "Telegram API", "External messaging platform")
-
-    Rel(user, ironclaw, "Queries messages", "Local terminal")
-    Rel(ironclaw, telegram, "Fetches messages (READ ONLY)", "HTTPS")
-
-    UpdateRelStyle(ironclaw, telegram, $lineColor="green", $textColor="green")
-```
-
-### Container Diagram (C4 Level 2)
-
-```mermaid
-C4Container
-    title Container Diagram - IronClaw on Raspberry Pi
-
-    Person(user, "User", "Local access only")
-
-    System_Boundary(pi, "Raspberry Pi (Physical Device)") {
-
-        Container_Boundary(systemd, "Systemd Hardening Layer") {
-            Container(ironclaw, "IronClaw Runtime", "Rust", "Agent orchestration, LLM reasoning")
-
-            Container_Boundary(wasm, "WASM Sandbox (wasmtime)") {
-                Container(tg_tool, "Telegram Tool", "WASM", "Read-only: getUpdates, getMe, getChat<br/>BLOCKED: sendMessage + 45 methods")
-                Container(notes_tool, "Local Notes Tool", "WASM", "Read/write ~/ironclaw-notes only")
-            }
-
-            Container(host_boundary, "Host Boundary Layer", "Rust", "HTTP allowlist, leak detection, credential injection")
-            Container(secrets, "Secrets Manager", "System Keychain", "AES-256-GCM encrypted credentials")
-        }
-
-        ContainerDb(postgres, "PostgreSQL + pgvector", "Database", "Message history, embeddings, audit logs")
-    }
-
-    System_Ext(telegram, "Telegram API", "api.telegram.org")
-
-    Rel(user, ironclaw, "Queries", "Local REPL")
-    Rel(ironclaw, tg_tool, "Tool calls")
-    Rel(ironclaw, notes_tool, "Tool calls")
-    Rel(tg_tool, host_boundary, "HTTP request (no creds)")
-    Rel(host_boundary, secrets, "Fetch token")
-    Rel(host_boundary, telegram, "HTTPS GET only", "TLS 1.3")
-    Rel(ironclaw, postgres, "Read/Write")
-
-    UpdateRelStyle(host_boundary, telegram, $lineColor="green")
-```
-
-### Component Diagram - Security Layers
-
-```mermaid
-flowchart TB
-    subgraph L6["Layer 6: Physical Security"]
-        P1["Device in your possession"]
-        P2["No cloud provider access"]
-        P3["No shared tenancy"]
-    end
-
-    subgraph L5["Layer 5: OS/Systemd Hardening"]
-        S1["NoNewPrivileges=true"]
-        S2["ProtectSystem=strict"]
-        S3["MemoryDenyWriteExecute"]
-        S4["RestrictAddressFamilies"]
-    end
-
-    subgraph L4["Layer 4: Network Isolation"]
-        N1["HTTP allowlist: api.telegram.org ONLY"]
-        N2["No lateral movement"]
-        N3["Outbound-only, no listeners"]
-    end
-
-    subgraph L3["Layer 3: Capability Restrictions"]
-        C1["10 read methods allowed"]
-        C2["45+ write methods BLOCKED"]
-        C3["No shell, no arbitrary HTTP"]
-    end
-
-    subgraph L2["Layer 2: Credential Isolation"]
-        CR1["Token in system keychain"]
-        CR2["AES-256-GCM encryption"]
-        CR3["Injected at host boundary"]
-        CR4["Never visible to WASM/LLM"]
-    end
-
-    subgraph L1["Layer 1: WASM Sandbox"]
-        W1["Memory isolation"]
-        W2["No direct syscalls"]
-        W3["Capability-based access"]
-        W4["Fuel-limited execution"]
-    end
-
-    L6 --> L5 --> L4 --> L3 --> L2 --> L1
-
-    style L6 fill:#e8f5e9
-    style L5 fill:#e3f2fd
-    style L4 fill:#fff3e0
-    style L3 fill:#fce4ec
-    style L2 fill:#f3e5f5
-    style L1 fill:#e0f7fa
-```
-
-### Data Flow - Message Query
+### Data Flow — Message Query
 
 ```mermaid
 sequenceDiagram
@@ -277,70 +178,7 @@ flowchart TD
 
 ## Why Raspberry Pi Over Cloud/VPS
 
-### Cloud Threat Surface
-
-```mermaid
-flowchart TD
-    subgraph Cloud["Cloud/VPS Environment"]
-        VM["Your VM"]
-
-        subgraph Threats["Threat Vectors"]
-            T1["Cloud Provider<br/>Employees"]
-            T2["Hypervisor<br/>Vulnerabilities"]
-            T3["Other Tenants<br/>(Side-channel)"]
-            T4["Network<br/>Inspection"]
-            T5["Legal/Subpoena<br/>Requests"]
-        end
-
-        T1 -->|"Memory dumps"| VM
-        T2 -->|"Spectre/Meltdown"| VM
-        T3 -->|"Cache timing"| VM
-        T4 -->|"TLS intercept"| VM
-        T5 -->|"Data requests"| VM
-    end
-
-    style VM fill:#ffcdd2
-    style Threats fill:#fff3e0
-```
-
-### Raspberry Pi Threat Surface
-
-```mermaid
-flowchart TD
-    subgraph Pi["Raspberry Pi Environment"]
-        Device["Your Device"]
-
-        subgraph Threats["Threat Vectors"]
-            T1["Physical Access"]
-            T2["Network Attacks"]
-        end
-
-        subgraph Mitigations["Mitigations"]
-            M1["Your home security"]
-            M2["TLS + VPN optional"]
-        end
-
-        T1 -.->|"Mitigated by"| M1
-        T2 -.->|"Mitigated by"| M2
-
-        T1 -->|"Requires presence"| Device
-        T2 -->|"Encrypted traffic"| Device
-    end
-
-    subgraph Benefits["Benefits"]
-        B1["No hypervisor"]
-        B2["No other tenants"]
-        B3["No provider access"]
-        B4["Your jurisdiction"]
-    end
-
-    Pi --- Benefits
-
-    style Device fill:#c8e6c9
-    style Benefits fill:#e8f5e9
-```
-
-### Detailed Comparison
+A cloud VPS exposes you to threats from the provider (employee access, memory snapshots, legal/subpoena requests), hypervisor vulnerabilities (Spectre, Meltdown, L1TF), shared tenancy (cache-timing side channels), and network inspection. A Raspberry Pi eliminates all of these — the only threat vectors are physical access (mitigated by keeping the device in your home) and network attacks (mitigated by TLS and optional VPN).
 
 | Factor | Raspberry Pi | Cloud VPS | Winner |
 |--------|--------------|-----------|--------|
@@ -359,34 +197,7 @@ flowchart TD
 
 ## Differences from Stock IronClaw
 
-### Configuration Hardening
-
-```mermaid
-flowchart LR
-    subgraph Stock["Stock IronClaw"]
-        S1["http_allowlist: *"]
-        S2["prompt_injection: warn"]
-        S3["All tools enabled"]
-        S4["No method blocking"]
-    end
-
-    subgraph Hardened["This Deployment"]
-        H1["http_allowlist:<br/>api.telegram.org ONLY"]
-        H2["prompt_injection: BLOCK"]
-        H3["Minimal tools"]
-        H4["45+ methods blocked"]
-    end
-
-    S1 -->|"Restricted"| H1
-    S2 -->|"Hardened"| H2
-    S3 -->|"Minimized"| H3
-    S4 -->|"Added"| H4
-
-    style Stock fill:#ffcdd2
-    style Hardened fill:#c8e6c9
-```
-
-### Key Differences
+This deployment aggressively hardens the default IronClaw configuration: the HTTP allowlist is locked to Telegram only, prompt injection detection is set to block (not warn), most tools are disabled, and 45+ Telegram write methods are explicitly blocked.
 
 | Setting | Stock IronClaw | This Deployment |
 |---------|---------------|-----------------|
@@ -479,13 +290,7 @@ ironclaw-deployment/
 
 ### Telegram Method Classification
 
-```mermaid
-pie title Telegram Bot API Methods
-    "Allowed (Read)" : 10
-    "Blocked (Write)" : 45
-```
-
-**Allowed (10 methods)** - Read-only, information retrieval:
+**Allowed (10 methods)** — Read-only, information retrieval:
 - `getUpdates` - Fetch new messages (polling)
 - `getMe` - Bot information
 - `getChat` - Chat metadata
@@ -514,33 +319,6 @@ pie title Telegram Bot API Methods
 | Storage | 32GB+ SD card or USB SSD (recommended) |
 | Network | Ethernet (recommended) or WiFi |
 | Cooling | Heatsink + fan (compilation generates heat) |
-
-### Installation Flow
-
-```mermaid
-flowchart LR
-    subgraph Setup["Setup Script"]
-        A1["Install Rust"] --> A2["Install PostgreSQL"]
-        A2 --> A3["Install pgvector"]
-        A3 --> A4["Build IronClaw<br/>(30 min on Pi)"]
-        A4 --> A5["Deploy Config"]
-        A5 --> A6["Install Service"]
-    end
-
-    subgraph Config["Configuration"]
-        B1["Create Telegram Bot<br/>via @BotFather"]
-        B2["Add Token to<br/>IronClaw Secrets"]
-        B3["Run Setup Wizard"]
-    end
-
-    subgraph Verify["Verification"]
-        C1["Run Security Tests"]
-        C2["Monitor Network"]
-        C3["Check Audit Logs"]
-    end
-
-    Setup --> Config --> Verify
-```
 
 ### Quick Start
 
@@ -593,42 +371,21 @@ df -h /var/log/ironclaw
 
 ### Incident Response Procedure
 
-```mermaid
-flowchart TD
-    Detect["Suspected Compromise"] --> Stop["1. STOP SERVICE<br/>systemctl stop ironclaw"]
-    Stop --> Preserve["2. PRESERVE EVIDENCE<br/>Copy logs, config"]
-    Preserve --> Analyze["3. ANALYZE<br/>Check audit logs"]
-    Analyze --> Rotate["4. ROTATE CREDENTIALS<br/>Revoke token via BotFather"]
-    Rotate --> Review["5. REVIEW & FIX<br/>Update config if needed"]
-    Review --> Verify["6. VERIFY<br/>Run security tests"]
-    Verify --> Restart["7. RESTART<br/>If appropriate"]
-```
+If you suspect a compromise:
+
+1. **Stop the service** — `systemctl stop ironclaw`
+2. **Preserve evidence** — Copy logs and config before making changes
+3. **Analyze** — Review audit logs for anomalies
+4. **Rotate credentials** — Revoke the bot token via @BotFather and generate a new one
+5. **Review and fix** — Update configuration if needed
+6. **Verify** — Run `./tests/security-verification.sh`
+7. **Restart** — Only after verification passes
 
 ---
 
 ## Known Security Limitations
 
 **This section documents residual risks that are NOT fully mitigated by the current (Option A) deployment. Security engineers should evaluate whether these risks are acceptable for their use case.**
-
-### Limitation Summary
-
-```mermaid
-quadrantChart
-    title Risk Assessment Matrix
-    x-axis Low Impact --> High Impact
-    y-axis Low Likelihood --> High Likelihood
-    quadrant-1 Monitor
-    quadrant-2 Address
-    quadrant-3 Accept
-    quadrant-4 Mitigate
-
-    Config Error: [0.3, 0.3]
-    LLM Manipulation: [0.5, 0.7]
-    Info Disclosure: [0.6, 0.5]
-    Same-Process Creds: [0.7, 0.1]
-    Supply Chain: [0.8, 0.2]
-    WASM Escape: [0.9, 0.05]
-```
 
 ### Detailed Limitations
 
@@ -655,48 +412,6 @@ quadrantChart
 ## Future Hardening Path
 
 This deployment (Option A) is the starting point. For higher-security requirements, a phased hardening path is documented:
-
-```mermaid
-flowchart LR
-    subgraph P0["Phase 0<br/>(Current)"]
-        P0A["Config-based<br/>blocking"]
-        P0R["Risk: Low"]
-    end
-
-    subgraph P1["Phase 1"]
-        P1A["Custom WASM<br/>Tool"]
-        P1R["Risk: Very Low"]
-    end
-
-    subgraph P2["Phase 2"]
-        P2A["+ Network<br/>Firewall"]
-        P2R["Risk: Near Zero"]
-    end
-
-    subgraph P3["Phase 3"]
-        P3A["Air-Gapped<br/>Architecture"]
-        P3R["Risk: Impossible<br/>(cred theft)"]
-    end
-
-    subgraph P4["Phase 4"]
-        P4A["+ HSM/TPM"]
-        P4R["Risk: Hardware<br/>attack required"]
-    end
-
-    subgraph P5["Phase 5"]
-        P5A["Formal<br/>Verification"]
-        P5R["Risk: Provably<br/>impossible"]
-    end
-
-    P0 --> P1 --> P2 --> P3 --> P4 --> P5
-
-    style P0 fill:#ffcdd2
-    style P1 fill:#fff3e0
-    style P2 fill:#fff9c4
-    style P3 fill:#c8e6c9
-    style P4 fill:#b2dfdb
-    style P5 fill:#b3e5fc
-```
 
 | Phase | Effort | Risk Reduction | Recommended When |
 |-------|--------|----------------|------------------|

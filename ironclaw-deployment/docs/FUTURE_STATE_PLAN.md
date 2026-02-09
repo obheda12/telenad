@@ -21,113 +21,24 @@ This document outlines the evolutionary path from the current "Option A" deploym
 
 ### Why Current Risks Exist
 
-```mermaid
-flowchart TD
-    subgraph Problem1["Problem 1: Config-Level Blocking"]
-        P1A["Current: sendMessage blocked<br/>by settings.toml"]
-        P1B["Risk: Config can be<br/>misconfigured"]
-        P1C["Target: sendMessage not in<br/>WASM capabilities"]
-        P1D["Result: Architecturally<br/>impossible"]
-
-        P1A -->|"Vulnerable to"| P1B
-        P1C -->|"Achieves"| P1D
-    end
-
-    subgraph Problem2["Problem 2: Shared Process"]
-        P2A["Current: Credentials + LLM<br/>same process"]
-        P2B["Risk: Memory corruption<br/>could leak"]
-        P2C["Target: Credentials in<br/>separate process"]
-        P2D["Result: Full compromise<br/>can't access creds"]
-
-        P2A -->|"Vulnerable to"| P2B
-        P2C -->|"Achieves"| P2D
-    end
-
-    subgraph Problem3["Problem 3: LLM Susceptibility"]
-        P3A["Current: LLM sees<br/>raw messages"]
-        P3B["Risk: Prompt injection<br/>affects reasoning"]
-        P3C["Target: Multi-model<br/>cross-validation"]
-        P3D["Result: Single injection<br/>can't compromise all"]
-
-        P3A -->|"Vulnerable to"| P3B
-        P3C -->|"Achieves"| P3D
-    end
-
-    style P1B fill:#ffcdd2
-    style P2B fill:#ffcdd2
-    style P3B fill:#ffcdd2
-    style P1D fill:#c8e6c9
-    style P2D fill:#c8e6c9
-    style P3D fill:#c8e6c9
-```
+| Problem | Current State | Risk | Target | Result |
+|---------|---------------|------|--------|--------|
+| **Config-level blocking** | `sendMessage` blocked by settings.toml | Config can be misconfigured | `sendMessage` not in WASM capabilities | Architecturally impossible |
+| **Shared process** | Credentials + LLM in same process | Memory corruption could leak token | Credentials in separate process | Full compromise can't access creds |
+| **LLM susceptibility** | LLM sees raw messages | Prompt injection affects reasoning | Multi-model cross-validation | Single injection can't compromise all |
 
 ---
 
 ## Evolution Phases Overview
 
-```mermaid
-flowchart LR
-    subgraph P0["Phase 0 (Current)"]
-        direction TB
-        P0A["Option A:<br/>Config-based blocking"]
-        P0R["Risk: Low"]
-        P0D["sendMessage blocked<br/>in settings.toml"]
-    end
-
-    subgraph P1["Phase 1"]
-        direction TB
-        P1A["Option B:<br/>Custom WASM Tool"]
-        P1R["Risk: Very Low"]
-        P1D["No sendMessage<br/>in binary"]
-    end
-
-    subgraph P2["Phase 2"]
-        direction TB
-        P2A["Option B+:<br/>Network Firewall"]
-        P2R["Risk: Near Zero"]
-        P2D["Kernel-level<br/>traffic filtering"]
-    end
-
-    subgraph P3["Phase 3"]
-        direction TB
-        P3A["Option C:<br/>Air-Gapped"]
-        P3R["Cred Theft: Impossible"]
-        P3D["Separate processes:<br/>creds vs LLM"]
-    end
-
-    subgraph P4["Phase 4"]
-        direction TB
-        P4A["Option C+:<br/>HSM/TPM"]
-        P4R["Hardware Attack Required"]
-        P4D["Credentials in<br/>tamper-resistant chip"]
-    end
-
-    subgraph P5["Phase 5 (Ultimate)"]
-        direction TB
-        P5A["Formal<br/>Verification"]
-        P5R["Provably Impossible"]
-        P5D["Mathematical proof<br/>of security"]
-    end
-
-    P0 --> P1 --> P2 --> P3 --> P4 --> P5
-
-    style P0 fill:#ffcdd2
-    style P1 fill:#fff3e0
-    style P2 fill:#fff9c4
-    style P3 fill:#c8e6c9
-    style P4 fill:#b2dfdb
-    style P5 fill:#b3e5fc
-```
-
-### Risk Reduction Summary
-
-```mermaid
-xychart-beta
-    title "Risk Level by Phase"
-    x-axis ["Phase 0", "Phase 1", "Phase 2", "Phase 3", "Phase 4", "Phase 5"]
-    y-axis "Risk Score" 0 --> 10
-    bar [6, 4, 2, 1, 0.5, 0.1]
-```
+| Phase | Approach | Risk Level | Key Change |
+|-------|----------|------------|------------|
+| **0 (Current)** | Config-based blocking | Low | `sendMessage` blocked in settings.toml |
+| **1** | Custom WASM Tool | Very Low | `sendMessage` not in binary at all |
+| **2** | + Network Firewall | Near Zero | Kernel-level traffic filtering |
+| **3** | Air-Gapped Architecture | Impossible (cred theft) | Separate processes for creds vs LLM |
+| **4** | + HSM/TPM | Hardware attack required | Credentials in tamper-resistant chip |
+| **5** | Formal Verification | Provably impossible | Mathematical proof of security |
 
 ---
 
@@ -434,36 +345,15 @@ flowchart TB
 
 ### Component Detail
 
-```mermaid
-flowchart LR
-    subgraph Ingest["Ingest Service"]
-        I1["1. Poll Telegram API"]
-        I2["2. Sanitize content"]
-        I3["3. Detect injections"]
-        I4["4. Write to DB"]
+**Ingest Service** (has credentials, no AI):
+1. Poll Telegram API
+2. Sanitize content — strip URLs, detect injection patterns, escape special characters, truncate length, add metadata
+3. Detect injections and flag suspicious messages
+4. Write sanitized data to database
 
-        I1 --> I2 --> I3 --> I4
-    end
-
-    subgraph Sanitize["Sanitization Steps"]
-        S1["Strip URLs"]
-        S2["Detect patterns"]
-        S3["Escape chars"]
-        S4["Truncate length"]
-        S5["Add metadata"]
-    end
-
-    I2 --> Sanitize
-
-    subgraph Agent["IronClaw Agent"]
-        A1["Read sanitized msgs"]
-        A2["NO credentials"]
-        A3["NO network access"]
-        A4["DB read-only"]
-    end
-
-    I4 -->|"Sanitized data"| A1
-```
+**IronClaw Agent** (has AI, no credentials):
+- Reads sanitized messages from database (read-only access)
+- Has no credentials, no network access, no write access to DB
 
 ### Ingest Service Implementation
 
@@ -594,28 +484,7 @@ GRANT INSERT ON messages TO ingest_service;
 
 ### Architecture with HSM
 
-```mermaid
-flowchart TB
-    subgraph Hardware["Hardware Security"]
-        HSM["HSM/TPM<br/>Tamper-resistant"]
-        Token["Telegram Token<br/>(encrypted in silicon)"]
-    end
-
-    subgraph Software["Software Layer"]
-        Ingest["Ingest Service"]
-        Sign["Request Signing"]
-    end
-
-    HSM --> Token
-    Token -->|"Never leaves HSM"| Sign
-    Sign -->|"Signed request"| Ingest
-    Ingest -->|"API call"| TG["Telegram"]
-
-    Attack["Software Compromise"] -.->|"Cannot extract"| HSM
-
-    style HSM fill:#b3e5fc
-    style Attack fill:#ffcdd2
-```
+The Telegram token is stored inside the HSM/TPM chip and never leaves the hardware. The ingest service sends signing requests to the HSM, which returns signed API requests without exposing the raw token. Even a full software compromise cannot extract the credential — a physical hardware attack would be required.
 
 ### Raspberry Pi TPM Option
 
@@ -650,30 +519,11 @@ echo -n "$TELEGRAM_BOT_TOKEN" | tpm2_nvwrite -C o -i - 0x1500001
 
 ### Verification Approach
 
-```mermaid
-flowchart TD
-    subgraph Properties["Security Properties to Prove"]
-        P1["Property 1: No HTTP POST<br/>to telegram.org"]
-        P2["Property 2: Token never<br/>in output"]
-        P3["Property 3: Only allowlisted<br/>URLs accessed"]
-    end
-
-    subgraph Tools["Verification Tools"]
-        T1["Kani (Rust)"]
-        T2["WASM Symbolic Exec"]
-        T3["Network Verifiers"]
-    end
-
-    subgraph Targets["Verification Targets"]
-        V1["WASM Tool"]
-        V2["Host Boundary"]
-        V3["Network Rules"]
-    end
-
-    P1 --> T1 --> V1
-    P2 --> T2 --> V2
-    P3 --> T3 --> V3
-```
+| Security Property | Verification Tool | Target Component |
+|-------------------|-------------------|------------------|
+| No HTTP POST to telegram.org | Kani (Rust model checker) | WASM Tool |
+| Token never appears in output | WASM Symbolic Execution | Host Boundary |
+| Only allowlisted URLs accessed | Network Verifiers | Network Rules |
 
 ### Example Kani Verification
 
@@ -722,50 +572,12 @@ mod verification {
 
 ## Summary: Risk Reduction by Phase
 
-```mermaid
-flowchart LR
-    subgraph Threats["Threat Types"]
-        T1["Credential Theft"]
-        T2["Send Message"]
-        T3["Exfiltration"]
-        T4["Bad Reasoning"]
-    end
-
-    subgraph P0["Phase 0"]
-        T1_0["Very Low"]
-        T2_0["Low"]
-        T3_0["Very Low"]
-        T4_0["Medium"]
-    end
-
-    subgraph P3["Phase 3"]
-        T1_3["Impossible"]
-        T2_3["Impossible"]
-        T3_3["Impossible"]
-        T4_3["Medium"]
-    end
-
-    subgraph P5["Phase 5"]
-        T1_5["Proven"]
-        T2_5["Proven"]
-        T3_5["Proven"]
-        T4_5["Low"]
-    end
-
-    T1 --> T1_0 --> T1_3 --> T1_5
-    T2 --> T2_0 --> T2_3 --> T2_5
-    T3 --> T3_0 --> T3_3 --> T3_5
-    T4 --> T4_0 --> T4_3 --> T4_5
-
-    style T1_0 fill:#fff3e0
-    style T2_0 fill:#ffcdd2
-    style T1_3 fill:#c8e6c9
-    style T2_3 fill:#c8e6c9
-    style T3_3 fill:#c8e6c9
-    style T1_5 fill:#b3e5fc
-    style T2_5 fill:#b3e5fc
-    style T3_5 fill:#b3e5fc
-```
+| Threat | Phase 0 | Phase 3 | Phase 5 |
+|--------|---------|---------|---------|
+| Credential Theft | Very Low | Impossible | Proven impossible |
+| Send Message | Low | Impossible | Proven impossible |
+| Exfiltration | Very Low | Impossible | Proven impossible |
+| Bad Reasoning | Medium | Medium | Low |
 
 ### Recommended Implementation Order
 
