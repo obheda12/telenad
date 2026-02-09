@@ -256,8 +256,6 @@ flowchart TD
 
     Blocked2 --> Response["Agent Response:<br/>'I cannot send messages.<br/>I'm read-only.'"]
 
-    Note1["Key Insight:<br/>We assume LLM WILL be manipulated.<br/>Architecture prevents action."]
-
     style Blocked1 fill:#c8e6c9
     style Blocked2 fill:#c8e6c9
     style Safe fill:#c8e6c9

@@ -236,11 +236,10 @@ flowchart TB
         N1["Only Telegram IPs allowed"]
     end
 
-    App --> Kernel --> Network
-
     Attack["Malicious Request"] --> App
     App -->|"IronClaw Bug"| Kernel
     Kernel -->|"BLOCKED"| Drop["Dropped"]
+    Kernel -.-> Network
 
     style Kernel fill:#c8e6c9
     style Drop fill:#c8e6c9
