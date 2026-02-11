@@ -1,6 +1,6 @@
 # Prompt Injection Test Cases
 
-These test cases verify that the Telegram Personal Assistant correctly handles prompt injection attempts. Unlike the previous IronClaw architecture (where the bot directly ingested messages), the new architecture has a separate data path:
+These test cases verify that the Telegram Personal Assistant correctly handles prompt injection attempts. The architecture has a separate data path:
 
 1. **tg-syncer** syncs ALL messages from your Telegram chats into PostgreSQL.
 2. **tg-querybot** retrieves relevant messages from the database and sends them as context to Claude.

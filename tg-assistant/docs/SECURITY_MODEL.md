@@ -4,7 +4,7 @@
 
 Authoritative security reference for the Telegram Personal Assistant. Covers the full security posture: what is protected, how, assumptions, and residual risk. Uses STRIDE methodology with attack trees and a formal risk matrix.
 
-**Related docs**: [TELETHON_HARDENING.md](TELETHON_HARDENING.md) (Telethon-specific controls), [FUTURE_STATE_PLAN.md](FUTURE_STATE_PLAN.md) (hardening roadmap). This document is self-contained for understanding the complete security posture.
+**Related docs**: [TELETHON_HARDENING.md](TELETHON_HARDENING.md) (Telethon-specific controls). This document is self-contained for understanding the complete security posture.
 
 ### Critical Security Fact
 
@@ -440,8 +440,8 @@ This section catalogs all identified threats using the STRIDE methodology. Each 
 | **Component** | PostgreSQL |
 | **Description** | An attacker gains access to the PostgreSQL database (via SQL injection, stolen credentials, or physical disk access) and extracts the complete message history. |
 | **Severity** | **HIGH** |
-| **Mitigation** | PostgreSQL listens on localhost only (`listen_addresses = 'localhost'`). Database roles are per-service with minimal privileges. nftables blocks all outbound connections from the `postgres` user to non-localhost. Physical security: Pi is in operator's home. Future mitigation: pgcrypto column-level encryption (Phase 3 of hardening roadmap). |
-| **Residual Risk** | Messages are currently stored in plaintext in PostgreSQL. Physical device theft exposes the database. Mitigated by planned encryption at rest (see FUTURE_STATE_PLAN.md Phase 3). |
+| **Mitigation** | PostgreSQL listens on localhost only (`listen_addresses = 'localhost'`). Database roles are per-service with minimal privileges. nftables blocks all outbound connections from the `postgres` user to non-localhost. Physical security: Pi is in operator's home. |
+| **Residual Risk** | Messages are currently stored in plaintext in PostgreSQL. Physical device theft exposes the database. Future consideration: pgcrypto column-level encryption for at-rest protection. |
 
 ### T7: Lateral Movement Between Services
 
@@ -620,7 +620,7 @@ flowchart TD
 
     C --> C1["Steal SD card"]
     C1 --> C2{"DB encrypted?"}
-    C2 -->|"Not yet<br/>(Phase 3 roadmap)"| C3["Messages readable<br/>(RISK ACCEPTED)"]
+    C2 -->|"Not yet"| C3["Messages readable<br/>(RISK ACCEPTED)"]
 
     style STOP1 fill:#c8e6c9
     style STOP2 fill:#c8e6c9
@@ -629,7 +629,7 @@ flowchart TD
     style C3 fill:#ffcdd2
 ```
 
-**Summary**: Network exfiltration is blocked by nftables. API-based exfiltration is blocked by the read-only wrapper (Telegram) or infeasible (Anthropic -- attacker cannot retrieve data from Anthropic's servers). Physical access to an unencrypted SD card is the primary residual risk, addressed in the hardening roadmap (Phase 3: pgcrypto).
+**Summary**: Network exfiltration is blocked by nftables. API-based exfiltration is blocked by the read-only wrapper (Telegram) or infeasible (Anthropic -- attacker cannot retrieve data from Anthropic's servers). Physical access to an unencrypted SD card is the primary residual risk.
 
 ---
 
@@ -829,33 +829,8 @@ The following risks are explicitly acknowledged and accepted by the operator as 
 | **LLM manipulation** (T2, T11) — Claude can be influenced by adversarial message content | No deterministic defense exists for systems processing untrusted text. Blast radius bounded: no write path, owner-only responses. | Treat outputs as advisory. Do not automate decisions based on bot responses. |
 | **Cloud data exposure** (T4, T11) — Top-K messages sent to Anthropic per query | Cloud LLM provides better reasoning than local alternatives on Pi. Data minimization (top-K only) reduces exposure. | Do not query about state secrets, medical records, or legally privileged content. |
 | **Telegram policy changes** (T8) — Automated Telethon access risks account restriction | Value of syncing all messages outweighs risk. Conservative rate limiting minimizes but cannot eliminate risk. | Monitor `FloodWaitError` frequency. Maintain Bot API fallback. |
-| **Plaintext database** (T6) — Messages unencrypted in PostgreSQL (temporary) | pgcrypto on hardening roadmap (Phase 3). Pi in operator's home = low physical theft probability. | Implement Phase 3 if physical access is a concern. Do not deploy in shared environments without DB encryption. |
-| **In-memory session** (T1, T10) — Decrypted session in syncer process memory | Telethon requires auth key in memory to operate. HSM (Phase 4) reduces but cannot eliminate exposure. | Keep OS/kernel patched. Audit dependency updates. Consider Phase 4 (HSM/TPM). |
-
----
-
-## 15. Comparison with Previous Architecture (IronClaw v2)
-
-The previous architecture used IronClaw (Rust WASM runtime) with the Bot API. The new architecture uses process-isolated Python services with Telethon MTProto.
-
-### What Improved
-
-| Area | Change |
-|------|--------|
-| Network enforcement | Application-level HTTP allowlist → kernel-level nftables per-UID rules |
-| Write prevention | Blocklist (could miss new methods) → allowlist (default-deny) |
-| Message coverage | Only chats with bot → all user chats |
-| Service isolation | Single process → three isolated processes with separate users, DB roles, credentials |
-| Audit tamper-evidence | Basic logging → append-only DB table + `chattr +a` log files |
-
-### What Regressed
-
-| Area | Regression | Mitigation |
-|------|-----------|------------|
-| Credential risk | Session = full account (vs. bot token = bot only) | Fernet encryption, keychain, dedicated user |
-| Sandbox strength | Process isolation < WASM memory isolation | nftables + systemd hardening compensate |
-| Data locality | Message content sent to Claude API (cloud) | Data minimization (top-K only) |
-| Injection detection | No automated detection (IronClaw had built-in) | System prompt hardening; no write path exists |
+| **Plaintext database** (T6) — Messages unencrypted in PostgreSQL | Pi in operator's home = low physical theft probability. pgcrypto column-level encryption can be added if physical access is a concern. | Do not deploy in shared environments without DB encryption. |
+| **In-memory session** (T1, T10) — Decrypted session in syncer process memory | Telethon requires auth key in memory to operate. No way to avoid this while using Telethon. | Keep OS/kernel patched. Audit dependency updates. |
 
 ---
 
@@ -985,7 +960,7 @@ This security model is built on the following assumptions. If any assumption is 
 | **Dependency update review** | Before any dependency upgrade | Change-driven | T10 (supply chain), test suite for read-only wrapper |
 | **Architecture change review** | Before adding new services or data flows | Change-driven | Trust boundaries, data flow threats, new STRIDE analysis |
 | **Telegram policy review** | Quarterly | Calendar-based | T8 (account ban), rate limiting configuration |
-| **Hardening phase review** | After implementing any hardening phase | Milestone-driven | Risk matrix update, residual risk reassessment |
+| **Security improvement review** | After implementing any security improvement | Milestone-driven | Risk matrix update, residual risk reassessment |
 
 **Review checklist**:
 
