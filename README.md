@@ -27,6 +27,7 @@ The architecture uses Telethon (MTProto User API) to sync messages from ALL your
 - [Verification Procedures](#verification-procedures)
 - [Incident Response](#incident-response)
 - [Known Security Limitations](#known-security-limitations)
+
 ---
 
 ## How It Works
@@ -126,48 +127,6 @@ flowchart TB
     QueryBot <--> DB
 ```
 
-### Data Flow — Message Sync
-
-```mermaid
-sequenceDiagram
-    autonumber
-    participant TG as Telegram<br/>(all chats)
-    participant Syncer as TG Syncer<br/>(Telethon)
-    participant DB as PostgreSQL<br/>+ pgvector
-    participant Audit as Audit Log
-
-    loop Every sync interval
-        Syncer->>TG: MTProto: get_dialogs / iter_messages
-        TG-->>Syncer: Messages from all chats
-        Syncer->>Syncer: Sanitize content
-        Syncer->>DB: INSERT messages + embeddings
-        Syncer->>Audit: Log API call + result
-    end
-```
-
-### Data Flow — User Query
-
-```mermaid
-sequenceDiagram
-    autonumber
-    participant User as You (Telegram)
-    participant Bot as Query Bot
-    participant DB as PostgreSQL
-    participant Claude as Claude API
-
-    User->>Bot: "What did Alice say about X?"
-    Bot->>Bot: Verify sender == owner_id
-
-    Bot->>DB: FTS + vector search
-    DB-->>Bot: Top-K relevant messages
-
-    Bot->>Claude: Context (relevant msgs only)<br/>+ user question
-    Claude-->>Bot: Analysis / summary
-
-    Bot->>User: Response
-    Bot->>DB: Audit log entry
-```
-
 ---
 
 ## Security Model
@@ -218,8 +177,8 @@ Details: [`tg-assistant/docs/TELETHON_HARDENING.md`](tg-assistant/docs/TELETHON_
 
 ## Telethon vs Bot API
 
-| Aspect | Bot API (old) | Telethon / MTProto (new) |
-|--------|---------------|--------------------------|
+| Aspect | Bot API | Telethon / MTProto |
+|--------|---------|-------------------|
 | **Message access** | Only chats where bot is added | ALL user's chats, groups, channels |
 | **Authentication** | Bot token | User session (phone + 2FA) |
 | **Session risk** | Token leak = bot compromise | Session leak = **full account compromise** |
@@ -461,7 +420,7 @@ If you suspect a compromise:
 | 1 | Telethon session = full account access if stolen | **CRITICAL** |
 | 2 | LLM reasoning manipulation via prompt injection | **MEDIUM** |
 | 3 | Claude API sees message content (cloud) | **MEDIUM** |
-| 4 | Python runtime is less sandboxed than WASM | **LOW** |
+| 4 | Python runtime relies on process isolation, not memory sandbox | **LOW** |
 | 5 | Supply chain (Python packages) | **LOW** |
 
 Full threat model with risk matrix and accepted risks: [`tg-assistant/docs/SECURITY_MODEL.md`](tg-assistant/docs/SECURITY_MODEL.md)
