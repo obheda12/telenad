@@ -65,7 +65,6 @@ Environment=PYTHONDONTWRITEBYTECODE=1
 # read the specific credentials listed here, nothing else.
 LoadCredential=telethon-session-key:/etc/credstore/telethon-session-key
 LoadCredential=db-password:/etc/credstore/tg-syncer-db-password
-LoadCredential=voyage-api-key:/etc/credstore/voyage-api-key
 
 # -----------------------------------------------------------------------------
 # Restart policy

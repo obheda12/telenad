@@ -150,26 +150,13 @@ api_key_keychain_key = "tg-assistant-claude-api-key"
 # EMBEDDINGS
 # =============================================================================
 [embeddings]
-# Primary embedding provider for semantic search.
-# "voyage" = Voyage AI API (high quality, requires network access from syncer)
-# "local" = sentence-transformers running on-device (no API call, slower on Pi)
-provider = "voyage"
+# Embedding provider for semantic search.
+# "local" = sentence-transformers running on-device (no API call needed)
+provider = "local"
 
-# Fallback if primary provider is unavailable (API down, rate limited, etc.)
-fallback = "local"
-
-# Voyage AI model -- voyage-3 is the current best general-purpose model.
-# Dimensions must match the pgvector column definition in the DB schema.
-voyage_model = "voyage-3"
-voyage_dimensions = 1024
-
-# Local fallback model -- all-MiniLM-L6-v2 runs well on Pi's ARM64.
-# Smaller dimensions = less storage, faster search, but lower quality.
+# Local model -- all-MiniLM-L6-v2 runs well on Pi's ARM64.
 local_model = "all-MiniLM-L6-v2"
 local_dimensions = 384
-
-# Voyage API key is stored in the system keychain.
-voyage_api_key_keychain_key = "tg-assistant-voyage-api-key"
 
 # =============================================================================
 # SECURITY
@@ -191,7 +178,7 @@ session_encryption = true
 
 # System keychain service name. All secrets are stored under this service
 # in the OS keychain (libsecret on Linux, Keychain on macOS).
-# Keys stored: bot token, Claude API key, Voyage API key, session encryption key.
+# Keys stored: bot token, Claude API key, session encryption key.
 keychain_service = "tg-assistant"
 
 # Prompt injection detection. Log and flag messages that match known

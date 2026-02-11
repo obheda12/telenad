@@ -140,8 +140,7 @@ phase_collect_credentials() {
     echo "    1. Telegram API ID + hash   -> https://my.telegram.org"
     echo "    2. Bot token                 -> @BotFather on Telegram"
     echo "    3. Anthropic API key         -> https://console.anthropic.com"
-    echo "    4. Voyage API key (optional) -> https://dash.voyageai.com"
-    echo "    5. Your Telegram user ID     -> @userinfobot on Telegram"
+    echo "    4. Your Telegram user ID     -> @userinfobot on Telegram"
     echo ""
     echo "----------------------------------------------"
     echo ""
@@ -161,6 +160,11 @@ phase_collect_credentials() {
 
     if ! [[ "${COLLECT_API_ID}" =~ ^[0-9]+$ ]]; then
         log_error "API ID must be a number."
+        exit 1
+    fi
+
+    if ! [[ "${COLLECT_API_HASH}" =~ ^[0-9a-fA-F]{32}$ ]]; then
+        log_error "API hash must be a 32-character hex string."
         exit 1
     fi
 
@@ -186,21 +190,6 @@ phase_collect_credentials() {
     if [[ -z "${COLLECT_ANTHROPIC_KEY}" ]]; then
         log_error "Anthropic API key is required."
         exit 1
-    fi
-
-    # --- Voyage API key (optional) ---
-    echo -e "${BOLD}Voyage AI API key (optional)${NC}"
-    echo "  For high-quality semantic search. Press Enter to skip."
-    echo "  Without Voyage, search uses full-text only (still functional)."
-    echo ""
-    read -rp "  Voyage API key (or Enter to skip): " COLLECT_VOYAGE_KEY
-    echo ""
-
-    if [[ -z "${COLLECT_VOYAGE_KEY}" ]]; then
-        log_info "Voyage skipped -- embeddings will use local model (FTS-only search)"
-        USE_VOYAGE=false
-    else
-        USE_VOYAGE=true
     fi
 
     # --- Owner Telegram ID ---
@@ -245,12 +234,6 @@ phase_collect_credentials() {
         echo -n "${COLLECT_ANTHROPIC_KEY}" | secret-tool store --label="tg-claude-key" service tg-assistant key anthropic_api_key 2>/dev/null && \
             log_success "Anthropic API key stored in keychain" || \
             { log_warn "Could not store Anthropic key in keychain"; KEYCHAIN_OK=false; }
-
-        if [[ "${USE_VOYAGE}" == true ]]; then
-            echo -n "${COLLECT_VOYAGE_KEY}" | secret-tool store --label="tg-voyage-key" service tg-assistant key voyage_api_key 2>/dev/null && \
-                log_success "Voyage API key stored in keychain" || \
-                { log_warn "Could not store Voyage key in keychain"; KEYCHAIN_OK=false; }
-        fi
     else
         log_warn "secret-tool not available"
         KEYCHAIN_OK=false
@@ -261,13 +244,10 @@ phase_collect_credentials() {
         log_warn "Some credentials could not be stored in the keychain."
         log_warn "You can set them as environment variables instead:"
         echo ""
-        echo "  export TG_ASSISTANT_API_ID='${COLLECT_API_ID}'"
-        echo "  export TG_ASSISTANT_API_HASH='${COLLECT_API_HASH}'"
+        echo "  export TG_ASSISTANT_API_ID='<your-api-id>'"
+        echo "  export TG_ASSISTANT_API_HASH='<your-api-hash>'"
         echo "  export TG_ASSISTANT_BOT_TOKEN='<your-bot-token>'"
         echo "  export TG_ASSISTANT_ANTHROPIC_API_KEY='<your-key>'"
-        if [[ "${USE_VOYAGE}" == true ]]; then
-            echo "  export TG_ASSISTANT_VOYAGE_API_KEY='<your-key>'"
-        fi
         echo ""
         log_warn "Add these to the systemd service files or a secure env file."
     fi
@@ -314,16 +294,6 @@ phase_configure() {
         log_success "API hash set in config"
     else
         log_info "API hash already configured"
-    fi
-
-    # Set embedding provider based on Voyage key
-    if [[ "${USE_VOYAGE}" == false ]]; then
-        if grep -q 'provider = "voyage"' "${CONFIG_FILE}" 2>/dev/null; then
-            sed -i 's|provider = "voyage"|provider = "local"|g' "${CONFIG_FILE}"
-            log_success "Embedding provider set to local (Voyage not configured)"
-        fi
-    else
-        log_info "Embedding provider: voyage (API key provided)"
     fi
 
     log_success "Configuration updated"
@@ -593,7 +563,7 @@ phase_service_activation() {
 # =========================================================================
 print_final_summary() {
     # Clear collected credentials from memory
-    unset COLLECT_BOT_TOKEN COLLECT_ANTHROPIC_KEY COLLECT_VOYAGE_KEY
+    unset COLLECT_BOT_TOKEN COLLECT_ANTHROPIC_KEY
 
     echo ""
     echo "=============================================="

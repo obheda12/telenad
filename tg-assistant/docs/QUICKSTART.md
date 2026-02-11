@@ -12,7 +12,6 @@ Gather these credentials -- you'll be prompted for each during setup:
 2. **Bot token** -- message [@BotFather](https://t.me/BotFather) on Telegram, send `/newbot`
 3. **Anthropic API key** -- [console.anthropic.com](https://console.anthropic.com/settings/keys)
 4. **Your Telegram user ID** -- message [@userinfobot](https://t.me/userinfobot) on Telegram
-5. **Voyage AI API key** (optional) -- [dash.voyageai.com](https://dash.voyageai.com) for semantic search
 
 ### Hardware
 
