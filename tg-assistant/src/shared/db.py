@@ -154,25 +154,24 @@ async def init_database(pool: asyncpg.Pool) -> None:
                 ON messages USING ivfflat (embedding vector_cosine_ops)
                 WITH (lists = 100);
             """)
+            # Indexes for filtered search (chat + time, time-only)
+            # Note: idx_messages_chat_timestamp covers chat_id-only queries too
+            # (chat_id is the leading column), so a standalone chat_id index
+            # is not needed.
+            await conn.execute("""
+                CREATE INDEX IF NOT EXISTS idx_messages_chat_timestamp
+                ON messages (chat_id, timestamp DESC);
+            """)
+
+            await conn.execute("""
+                CREATE INDEX IF NOT EXISTS idx_messages_timestamp
+                ON messages (timestamp DESC);
+            """)
         except asyncpg.exceptions.InsufficientPrivilegeError:
             logger.debug(
                 "Skipping schema init (unprivileged role) — "
                 "tables must already exist from setup"
             )
-
-        # Indexes for filtered search (chat + time, time-only)
-        # Note: idx_messages_chat_timestamp covers chat_id-only queries too
-        # (chat_id is the leading column), so a standalone chat_id index
-        # is not needed.
-        await conn.execute("""
-            CREATE INDEX IF NOT EXISTS idx_messages_chat_timestamp
-            ON messages (chat_id, timestamp DESC);
-        """)
-
-        await conn.execute("""
-            CREATE INDEX IF NOT EXISTS idx_messages_timestamp
-            ON messages (timestamp DESC);
-        """)
 
     logger.info("Database schema initialised.")
 
