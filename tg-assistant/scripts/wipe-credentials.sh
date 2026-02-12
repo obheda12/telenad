@@ -186,23 +186,29 @@ if command -v psql &>/dev/null && systemctl is-active --quiet postgresql 2>/dev/
     done
 
     # Remove peer auth entries from pg_hba.conf and pg_ident.conf
-    PG_VERSION=$(ls /etc/postgresql/ 2>/dev/null | head -1)
-    if [[ -n "${PG_VERSION}" ]]; then
+    HBA_FILE=$(sudo -u postgres psql -qAt -c "SHOW hba_file" 2>/dev/null)
+    IDENT_FILE=$(sudo -u postgres psql -qAt -c "SHOW ident_file" 2>/dev/null)
+
+    # Fallback to standard Debian path
+    if [[ -z "${HBA_FILE}" || -z "${IDENT_FILE}" ]]; then
+        PG_VERSION=$(ls /etc/postgresql/ 2>/dev/null | head -1)
         PG_CONF="/etc/postgresql/${PG_VERSION}/main"
-
-        if [[ -f "${PG_CONF}/pg_hba.conf" ]]; then
-            sed -i '/tg_syncer.*peer.*tg-assistant/d' "${PG_CONF}/pg_hba.conf"
-            sed -i '/tg_querybot.*peer.*tg-assistant/d' "${PG_CONF}/pg_hba.conf"
-            log_success "Removed peer auth rules from pg_hba.conf"
-        fi
-
-        if [[ -f "${PG_CONF}/pg_ident.conf" ]]; then
-            sed -i '/tg-assistant/d' "${PG_CONF}/pg_ident.conf"
-            log_success "Removed identity mappings from pg_ident.conf"
-        fi
-
-        systemctl reload postgresql 2>/dev/null || true
+        HBA_FILE="${HBA_FILE:-${PG_CONF}/pg_hba.conf}"
+        IDENT_FILE="${IDENT_FILE:-${PG_CONF}/pg_ident.conf}"
     fi
+
+    if [[ -f "${HBA_FILE}" ]]; then
+        sed -i '/tg_syncer.*peer.*tg-assistant/d' "${HBA_FILE}"
+        sed -i '/tg_querybot.*peer.*tg-assistant/d' "${HBA_FILE}"
+        log_success "Removed peer auth rules from pg_hba.conf"
+    fi
+
+    if [[ -f "${IDENT_FILE}" ]]; then
+        sed -i '/tg-assistant/d' "${IDENT_FILE}"
+        log_success "Removed identity mappings from pg_ident.conf"
+    fi
+
+    systemctl reload postgresql 2>/dev/null || true
 else
     log_warn "PostgreSQL not running — skipping database cleanup"
 fi

@@ -571,15 +571,23 @@ EOF
     # Configure peer authentication for Unix socket connections.
     # Maps system users (tg-syncer, tg-querybot) to PG roles (tg_syncer,
     # tg_querybot) so no passwords are needed — the kernel verifies identity.
+    #
+    # NOTE: We query SHOW hba_file / ident_file directly (not data_directory)
+    # because on Debian/Ubuntu the config dir (/etc/postgresql/<ver>/main/)
+    # differs from the data dir (/var/lib/postgresql/<ver>/main/).
     # -----------------------------------------------------------------------
-    PG_CONF_DIR=$(sudo -u postgres psql -qAt -c "SHOW data_directory" 2>/dev/null | head -1)
-    if [[ -z "${PG_CONF_DIR}" ]]; then
+    HBA_FILE=$(sudo -u postgres psql -qAt -c "SHOW hba_file" 2>/dev/null)
+    IDENT_FILE=$(sudo -u postgres psql -qAt -c "SHOW ident_file" 2>/dev/null)
+
+    # Fallback if psql query failed
+    if [[ -z "${HBA_FILE}" || -z "${IDENT_FILE}" ]]; then
         PG_CONF_DIR="/etc/postgresql/$(ls /etc/postgresql/ 2>/dev/null | tail -1)/main"
+        HBA_FILE="${HBA_FILE:-${PG_CONF_DIR}/pg_hba.conf}"
+        IDENT_FILE="${IDENT_FILE:-${PG_CONF_DIR}/pg_ident.conf}"
     fi
 
-    if [[ -d "${PG_CONF_DIR}" ]]; then
+    if [[ -f "${HBA_FILE}" && -f "${IDENT_FILE}" ]]; then
         # pg_ident.conf: map system user → PG role
-        IDENT_FILE="${PG_CONF_DIR}/pg_ident.conf"
         for MAPPING in "tg-assistant tg-syncer tg_syncer" "tg-assistant tg-querybot tg_querybot"; do
             if ! grep -qF "${MAPPING}" "${IDENT_FILE}" 2>/dev/null; then
                 echo "${MAPPING}" >> "${IDENT_FILE}"
@@ -588,7 +596,6 @@ EOF
         log_success "pg_ident.conf: system user → PG role mappings added"
 
         # pg_hba.conf: allow peer auth for our users on the tg_assistant DB
-        HBA_FILE="${PG_CONF_DIR}/pg_hba.conf"
         for PG_USER in "${DB_SYNCER_USER}" "${DB_QUERYBOT_USER}"; do
             HBA_LINE="local   ${DB_NAME}       ${PG_USER}                              peer map=tg-assistant"
             if ! grep -qF "${PG_USER}" "${HBA_FILE}" 2>/dev/null || ! grep -qF "tg-assistant" "${HBA_FILE}" 2>/dev/null; then
@@ -604,10 +611,11 @@ EOF
         log_success "pg_hba.conf: peer authentication rules added"
 
         # Reload PostgreSQL to pick up config changes
+        PG_CONF_DIR=$(dirname "${HBA_FILE}")
         systemctl reload postgresql 2>/dev/null || sudo -u postgres pg_ctl reload -D "${PG_CONF_DIR}" 2>/dev/null || true
         log_success "PostgreSQL configuration reloaded"
     else
-        log_warn "Could not find PostgreSQL config directory -- configure pg_hba.conf manually"
+        log_warn "Could not find pg_hba.conf (${HBA_FILE}) or pg_ident.conf (${IDENT_FILE}) -- configure manually"
     fi
 
     log_success "PostgreSQL configured"
