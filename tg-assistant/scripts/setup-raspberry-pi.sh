@@ -239,13 +239,25 @@ setup_directories() {
     mkdir -p "${LOG_DIR}/syncer"
     mkdir -p "${LOG_DIR}/querybot"
 
-    # Log directory: both service users need write access
-    chown root:root "${LOG_DIR}"
-    chmod 755 "${LOG_DIR}"
+    # Log directory: both service users need write access to the shared audit log.
+    # Create a tg-assistant group that both users belong to.
+    if ! getent group tg-assistant >/dev/null 2>&1; then
+        groupadd --system tg-assistant
+    fi
+    usermod -aG tg-assistant "${SYNCER_USER}" 2>/dev/null || true
+    usermod -aG tg-assistant "${QUERYBOT_USER}" 2>/dev/null || true
+
+    chown root:tg-assistant "${LOG_DIR}"
+    chmod 775 "${LOG_DIR}"
     chown "${SYNCER_USER}:${SYNCER_USER}" "${LOG_DIR}/syncer"
     chmod 750 "${LOG_DIR}/syncer"
     chown "${QUERYBOT_USER}:${QUERYBOT_USER}" "${LOG_DIR}/querybot"
     chmod 750 "${LOG_DIR}/querybot"
+
+    # Shared audit log writable by both services
+    touch "${LOG_DIR}/audit.log"
+    chown root:tg-assistant "${LOG_DIR}/audit.log"
+    chmod 664 "${LOG_DIR}/audit.log"
 
     # Syncer state directory (session updates during sync)
     chown "${SYNCER_USER}:${SYNCER_USER}" /var/lib/tg-syncer
