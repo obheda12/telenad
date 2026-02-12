@@ -247,61 +247,81 @@ async def main() -> None:
     api_id: int = int(config["syncer"]["api_id"])
     api_hash: str = config["syncer"]["api_hash"]
 
-    # Session file is encrypted at rest; decrypt into memory only
+    # Session file is encrypted at rest; decrypt to RAM-backed tmpfs only.
+    # Telethon needs an SQLite file path — we write to /dev/shm (tmpfs)
+    # so decrypted session never touches persistent storage.
     session_path = Path(config["syncer"]["session_path"])
     session_key = get_secret("session_encryption_key")
-    session = decrypt_session_file(session_path, session_key)
+    session_bytes = decrypt_session_file(session_path, session_key)
 
-    # --- database (Unix socket + peer auth) ---
-    db_config = dict(config["database"])
-    db_config["user"] = config["syncer"].get("db_user", "tg_syncer")
-    pool = await get_connection_pool(db_config)
-    await init_database(pool)
-    store = MessageStore(pool)
-    audit = AuditLogger(pool)
+    import tempfile, os  # noqa: E401
+    shm_dir = "/dev/shm" if os.path.isdir("/dev/shm") else None
+    tmp_fd, tmp_path = tempfile.mkstemp(suffix=".session", dir=shm_dir)
+    try:
+        os.write(tmp_fd, session_bytes)
+        os.close(tmp_fd)
+        os.chmod(tmp_path, 0o600)
+        # Telethon appends ".session" to the path, so strip the suffix
+        session_base = tmp_path.removesuffix(".session")
 
-    # --- embeddings ---
-    embedder = create_embedding_provider(config.get("embeddings", {}))
+        # --- database (Unix socket + peer auth) ---
+        db_config = dict(config["database"])
+        db_config["user"] = config["syncer"].get("db_user", "tg_syncer")
+        pool = await get_connection_pool(db_config)
+        await init_database(pool)
+        store = MessageStore(pool)
+        audit = AuditLogger(pool)
 
-    # --- Telegram (read-only) ---
-    raw_client = TelethonClient(session, api_id, api_hash)
-    async with ReadOnlyTelegramClient(raw_client) as client:
-        me = await client.get_me()
-        logger.info("Logged in as %s (id=%s)", me.username, me.id)
-        await audit.log("syncer", "startup", {"user_id": me.id}, success=True)
+        # --- embeddings ---
+        embedder = create_embedding_provider(config.get("embeddings", {}))
 
-        sync_interval: float = config.get("syncer", {}).get(
-            "sync_interval_seconds", 300.0
-        )
+        # --- Telegram (read-only) ---
+        raw_client = TelethonClient(session_base, api_id, api_hash)
+        async with ReadOnlyTelegramClient(raw_client) as client:
+            me = await client.get_me()
+            logger.info("Logged in as %s (id=%s)", me.username, me.id)
+            await audit.log("syncer", "startup", {"user_id": me.id}, success=True)
 
-        # --- main loop ---
-        while not _shutdown_event.is_set():
-            try:
-                count = await sync_once(client, store, embedder, audit, config)
-                logger.info("Sync pass complete: %d new messages", count)
-                await audit.log(
-                    "syncer",
-                    "sync_pass",
-                    {"new_messages": count},
-                    success=True,
-                )
-            except Exception:
-                logger.exception("Error during sync pass")
-                await audit.log(
-                    "syncer", "sync_pass", {"error": "see logs"}, success=False
-                )
+            sync_interval: float = config.get("syncer", {}).get(
+                "sync_interval_seconds", 300.0
+            )
 
-            # Wait for the next cycle or a shutdown signal
-            try:
-                await asyncio.wait_for(
-                    _shutdown_event.wait(), timeout=sync_interval
-                )
-            except asyncio.TimeoutError:
-                pass  # normal — timeout means it's time to sync again
+            # --- main loop ---
+            while not _shutdown_event.is_set():
+                try:
+                    count = await sync_once(client, store, embedder, audit, config)
+                    logger.info("Sync pass complete: %d new messages", count)
+                    await audit.log(
+                        "syncer",
+                        "sync_pass",
+                        {"new_messages": count},
+                        success=True,
+                    )
+                except Exception:
+                    logger.exception("Error during sync pass")
+                    await audit.log(
+                        "syncer", "sync_pass", {"error": "see logs"}, success=False
+                    )
 
-    # --- cleanup ---
-    await pool.close()
-    logger.info("Syncer shut down cleanly.")
+                # Wait for the next cycle or a shutdown signal
+                try:
+                    await asyncio.wait_for(
+                        _shutdown_event.wait(), timeout=sync_interval
+                    )
+                except asyncio.TimeoutError:
+                    pass  # normal — timeout means it's time to sync again
+
+        # --- cleanup ---
+        await pool.close()
+        logger.info("Syncer shut down cleanly.")
+    finally:
+        # Shred the decrypted session from tmpfs
+        if os.path.exists(tmp_path):
+            os.remove(tmp_path)
+        # Telethon may also create a -journal file
+        journal = tmp_path + "-journal"
+        if os.path.exists(journal):
+            os.remove(journal)
 
 
 def run() -> None:
