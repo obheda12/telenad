@@ -209,25 +209,13 @@ async def main():
     print(f"  Encrypted session saved to: {encrypted_path}")
     print(f"  Unencrypted session file removed.")
 
-    # Store the Fernet key in the system keychain
-    try:
-        import keyring
-        keyring.set_password("tg-assistant", "telethon_session_key", fernet_key.decode())
-        print("  Encryption key stored in system keychain.")
-    except Exception as e:
-        # Fallback: print the key for manual storage
-        print(f"\n  WARNING: Could not store key in system keychain: {e}")
-        print(f"  You MUST store this encryption key securely:")
-        print(f"  {fernet_key.decode()}")
-        print(f"\n  Store it with:")
-        print(f"  secret-tool store --label='tg-session-key' service tg-assistant key telethon_session_key")
-        # Write to a temporary file that will be shredded
-        key_file = os.path.join(session_dir, ".fernet_key.tmp")
-        with open(key_file, "w") as f:
-            f.write(fernet_key.decode())
-        os.chmod(key_file, 0o600)
-        print(f"\n  Key also written to: {key_file}")
-        print(f"  DELETE THIS FILE after storing the key: sudo shred -u {key_file}")
+    # Write the Fernet key to a temp file for the shell script to encrypt
+    # with systemd-creds. The temp file is shredded immediately after.
+    key_tmp = os.path.join(session_dir, ".fernet_key.tmp")
+    with open(key_tmp, "w") as f:
+        f.write(fernet_key.decode())
+    os.chmod(key_tmp, 0o600)
+    print(f"  Fernet key written to temp file (will be encrypted + shredded).")
 
     # -----------------------------------------------------------------------
     # Verify the encrypted session works
@@ -312,22 +300,27 @@ done
 log_success "File permissions set (0600, owned by ${SYNCER_USER})"
 
 # ---------------------------------------------------------------------------
-# Store API credentials in keychain
+# Encrypt session key with systemd-creds
 # ---------------------------------------------------------------------------
 echo ""
-log_info "Storing API credentials in keychain..."
+log_info "Encrypting session key with systemd-creds..."
 
-# Try to store via secret-tool (GNOME keyring)
-if command -v secret-tool &>/dev/null; then
-    echo -n "${API_ID}" | secret-tool store --label="tg-api-id" service tg-assistant key api_id 2>/dev/null && \
-        log_success "API ID stored in keychain" || \
-        log_warn "Could not store API ID in keychain -- store manually"
+KEY_TMP="${SESSION_DIR}/.fernet_key.tmp"
+if [[ -f "${KEY_TMP}" ]]; then
+    mkdir -p /etc/credstore.encrypted
+    chmod 700 /etc/credstore.encrypted
 
-    echo -n "${API_HASH}" | secret-tool store --label="tg-api-hash" service tg-assistant key api_hash 2>/dev/null && \
-        log_success "API hash stored in keychain" || \
-        log_warn "Could not store API hash in keychain -- store manually"
+    systemd-creds encrypt --name=session_encryption_key \
+        "${KEY_TMP}" /etc/credstore.encrypted/session_encryption_key
+    chmod 600 /etc/credstore.encrypted/session_encryption_key
+    chown root:root /etc/credstore.encrypted/session_encryption_key
+    log_success "Session key encrypted in credstore"
+
+    shred -u "${KEY_TMP}" 2>/dev/null || rm -f "${KEY_TMP}"
+    log_success "Plaintext key file shredded"
 else
-    log_warn "secret-tool not available -- store API credentials manually"
+    log_error "Fernet key temp file not found at ${KEY_TMP}"
+    exit 1
 fi
 
 # Clear sensitive variables

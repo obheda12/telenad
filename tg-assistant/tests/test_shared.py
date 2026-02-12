@@ -84,6 +84,31 @@ class TestSessionEncryption:
 
 
 class TestGetSecret:
+    def test_credentials_directory_first(self, tmp_path, monkeypatch):
+        """$CREDENTIALS_DIRECTORY should be checked before keychain and env."""
+        cred_file = tmp_path / "my-secret"
+        cred_file.write_text("from-credstore")
+        monkeypatch.setenv("CREDENTIALS_DIRECTORY", str(tmp_path))
+        # Also set env var — should NOT be used (credstore takes priority)
+        monkeypatch.setenv("TG_ASSISTANT_MY_SECRET", "from-env")
+        result = get_secret("my-secret")
+        assert result == "from-credstore"
+
+    def test_credentials_directory_missing_file_falls_through(self, tmp_path, monkeypatch):
+        """If credential file doesn't exist, should fall through to next source."""
+        monkeypatch.setenv("CREDENTIALS_DIRECTORY", str(tmp_path))
+        monkeypatch.setenv("TG_ASSISTANT_BOT_TOKEN", "from-env")
+        result = get_secret("bot_token")
+        assert result == "from-env"
+
+    def test_credentials_directory_strips_whitespace(self, tmp_path, monkeypatch):
+        """Credential file values should be stripped of leading/trailing whitespace."""
+        cred_file = tmp_path / "api-key"
+        cred_file.write_text("  sk-secret-123  \n")
+        monkeypatch.setenv("CREDENTIALS_DIRECTORY", str(tmp_path))
+        result = get_secret("api-key")
+        assert result == "sk-secret-123"
+
     def test_env_var_fallback(self, monkeypatch):
         """When secret-tool is not available, should fall back to env var."""
         monkeypatch.setenv("TG_ASSISTANT_BOT_TOKEN", "test-token-123")

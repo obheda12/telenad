@@ -55,19 +55,18 @@ Environment=PYTHONPATH=/opt/tg-assistant/src
 Environment=PYTHONDONTWRITEBYTECODE=1
 
 # -----------------------------------------------------------------------------
-# Credential injection via systemd LoadCredential
+# Credential injection via systemd-creds (encrypted at rest)
 # -----------------------------------------------------------------------------
-# Same mechanism as tg-syncer: credentials loaded from /etc/credstore/
-# and exposed under $CREDENTIALS_DIRECTORY. The querybot needs:
-# - Bot token: to receive and respond to Telegram bot messages
-# - Claude API key: to generate answers via the Anthropic API
-# - DB password: to connect to PostgreSQL with querybot_role
+# Credentials are encrypted on disk using a machine-specific key
+# (/var/lib/systemd/credential.secret). At service start, systemd decrypts
+# them into a private tmpfs mount at $CREDENTIALS_DIRECTORY — the plaintext
+# exists only in RAM, never on disk.
 #
 # NOTE: The querybot does NOT have access to the Telethon session key.
 # It cannot impersonate the user's Telegram account.
-LoadCredential=bot-token:/etc/credstore/tg-querybot-bot-token
-LoadCredential=claude-api-key:/etc/credstore/claude-api-key
-LoadCredential=db-password:/etc/credstore/tg-querybot-db-password
+# DB auth uses Unix socket peer authentication — no password credential needed.
+LoadCredentialEncrypted=tg-assistant-bot-token:/etc/credstore.encrypted/tg-assistant-bot-token
+LoadCredentialEncrypted=tg-assistant-claude-api-key:/etc/credstore.encrypted/tg-assistant-claude-api-key
 
 # -----------------------------------------------------------------------------
 # Restart policy

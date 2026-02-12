@@ -156,7 +156,7 @@ Security does not depend on any single control. An attacker must defeat multiple
 | 3 | **Network / nftables** | Per-UID nftables rules restrict each process to specific destination IPs and ports. Rules are enforced at the kernel's netfilter layer, not in userspace. | Data exfiltration to attacker-controlled servers, C2 communication, lateral movement to LAN hosts, credential exfiltration via DNS/HTTP | Kernel-level exploit that bypasses netfilter, or compromise of an allowed destination (Telegram/Anthropic infrastructure) |
 | 4 | **Process Isolation** | Three separate OS processes, three separate system users, three separate database roles. No shared memory, no shared credentials, no shared filesystem paths (beyond read-only system libraries). | Lateral movement between services -- compromise of the querybot does not grant access to the Telethon session; compromise of the syncer does not grant access to the Claude API key | Kernel exploit enabling cross-user memory access, or compromise of a shared resource (PostgreSQL) |
 | 5 | **Read-Only Wrapper** | The Telethon client is wrapped in `ReadOnlyTelegramClient` which uses an **allowlist** (not blocklist) of permitted methods. Any method not explicitly in `ALLOWED_METHODS` raises `PermissionError`. New Telethon methods added in future versions are blocked by default. | Accidental or malicious use of Telethon write methods (`send_message`, `edit_message`, `delete_messages`, `forward_messages`, etc.) -- the wrapper prevents the syncer from modifying any Telegram state | Python runtime exploit that bypasses the wrapper (e.g., directly accessing `self._client` via object introspection), or modification of the wrapper source code (mitigated by `ProtectSystem=strict`) |
-| 6 | **Credential Isolation** | Telethon session encrypted at rest with Fernet (AES-128-CBC + HMAC-SHA256). Encryption key stored in system keychain, accessible only to `tg-syncer` user. Bot token and Claude API key injected via systemd `LoadCredential`, never written to environment variables or config files on disk. DB credentials are per-role and injected via systemd environment. | Credential theft from disk (stolen SD card, filesystem access), credential leakage via environment variable inspection, credential exposure in config files or version control | Compromise of the system keychain (requires `tg-syncer` user access), or runtime memory inspection of the target process (requires root or same-user access) |
+| 6 | **Credential Isolation** | All service credentials (bot token, Claude API key, session encryption key) are **encrypted at rest** using `systemd-creds encrypt`, which binds each credential to a machine-specific key (`/var/lib/systemd/credential.secret`). Encrypted blobs live in `/etc/credstore.encrypted/` (root:root 0600); plaintext exists **only in RAM** on a private tmpfs mount during service runtime. Each service receives only its own credentials via `LoadCredentialEncrypted=` — the querybot cannot access the session key, and the syncer cannot access the bot token. DB auth uses Unix socket peer authentication (kernel-verified identity, no passwords at all). The Telethon session file is additionally encrypted with Fernet (AES-128-CBC + HMAC-SHA256). | Credential theft from disk (stolen SD card gives only encrypted blobs, useless without the machine key), credential leakage via environment variables (never used), credential exposure in config files or version control (no secrets in config), cross-service credential access (systemd per-service injection) | Root access on the running system (can read `/run/credentials/` tmpfs or decrypt using the machine key), **or** physical SD card theft combined with extraction of the machine key from the same card (mitigated by LUKS full-disk encryption — see Appendix E) |
 | 7 | **LLM Boundary Hardening** | Untrusted synced messages are wrapped in XML boundary markers (`<message_context trust_level="untrusted">`) before reaching Claude. All user-controlled fields (sender names, chat titles, message text) are HTML-escaped to prevent tag injection. The system prompt establishes a 4-level trust hierarchy where synced content is the lowest level. `ContentSanitizer` detects known injection patterns (LLM tokens like `[INST]`/`<\|im_start\|>`, canonical override phrases, null bytes) and logs warnings with message metadata. `InputValidator` rejects malformed user queries (oversized, null bytes) before they enter the pipeline. Both are stdlib-only and add <0.1ms latency. | Prompt injection via synced messages (T2), LLM reasoning manipulation (T11) -- boundary markers make the trust boundary explicit to Claude; escaping prevents boundary escape via crafted chat titles or message text; pattern detection provides alerting for known attack signatures | Novel injection techniques that don't match known patterns and that Claude follows despite boundary markers and system prompt instructions. No deterministic defense exists for LLM manipulation; this layer reduces attack surface and provides detection, not a guarantee. |
 | 8 | **Audit** | Every Telegram API call, every database query, every Claude API request, and every bot interaction is logged to a structured JSON audit log. The audit table in PostgreSQL is append-only (both roles have INSERT but not UPDATE/DELETE on `audit_log`). Injection detection warnings are counted and included in query audit entries (`injection_warnings_count`). | Undetected compromise, post-incident forensic gaps, attribution failure | Deletion of log files (mitigated by append-only DB table and separate log file rotation), or compromise of both the application and the audit infrastructure simultaneously |
 
@@ -166,7 +166,7 @@ The layers are designed to be **independently effective**. Even if an attacker f
 
 | Scenario | Layers Still Active |
 |----------|-------------------|
-| Attacker has physical access to powered-off Pi | Credential encryption at rest (layer 6) -- session file is encrypted, SD card contents alone are insufficient |
+| Attacker has physical access to powered-off Pi | Credential encryption at rest (layer 6) -- all credentials are `systemd-creds` encrypted with a machine key; session file is Fernet-encrypted. Without LUKS, the machine key is on the same SD card (see Appendix E for LUKS recommendation). With LUKS, SD card contents are completely unreadable. |
 | Python runtime exploit in syncer | Systemd hardening (layer 2), nftables (layer 3), credential isolation (layer 6), audit (layer 8) -- the syncer process is still confined |
 | nftables misconfiguration | Read-only wrapper (layer 5), credential isolation (layer 6), process isolation (layer 4) -- even with network access, the syncer cannot send messages or access querybot credentials |
 | Database compromise (SQL injection) | Network restrictions (layer 3), credential isolation (layer 6) -- database has no internet access; database credentials do not grant Telegram or Claude access |
@@ -176,25 +176,49 @@ The layers are designed to be **independently effective**. Even if an attacker f
 
 ## 6. Credential Management
 
-| Credential | Risk | Storage | Permissions | Rotation |
-|-----------|------|---------|-------------|----------|
-| **Telethon session** | **CRITICAL** — full account access | Fernet-encrypted file + keychain key | `0600` `tg-syncer` | Re-authenticate via `setup-telethon-session.sh` |
-| **Bot token** | **MEDIUM** — bot control only | systemd `LoadCredential` | `0600` `root:root` | Revoke via @BotFather, update credential file |
-| **Claude API key** | **MEDIUM** — API billing | systemd `LoadCredential` | `0600` `root:root` | Regenerate in Anthropic console |
-| **DB credentials** | **LOW-MEDIUM** — role-scoped DB access | systemd `Environment=` (per-service scope) | Not in env/files on disk | `ALTER ROLE ... PASSWORD`, update systemd unit |
+### 6.1 Credential Inventory
 
-All credentials are read once at service start and held in memory. The Telethon session is decrypted in-memory only (plaintext never on disk). Credential files are not visible cross-process (`ProtectProc=invisible`). See [TELETHON_HARDENING.md](TELETHON_HARDENING.md) for session encryption details.
+| Credential | Impact if Exposed | At-Rest Storage | Runtime Access | Rotation |
+|-----------|-------------------|-----------------|---------------|----------|
+| **Telethon session** | **CRITICAL** — full Telegram account access (read, write, delete, change settings) | Fernet-encrypted file (`0600` `tg-syncer`), encryption key in `systemd-creds` encrypted credstore | Decrypted to RAM only; never on disk as plaintext | Terminate session in Telegram settings, re-run `setup-telethon-session.sh` |
+| **Session encryption key** | **CRITICAL** — decrypts the Telethon session file | `systemd-creds encrypt` → `/etc/credstore.encrypted/` (encrypted blob, `0600` root) | systemd decrypts to tmpfs at service start (`$CREDENTIALS_DIRECTORY`) | Re-run `setup-telethon-session.sh` (generates new key + re-encrypts session) |
+| **Bot token** | **MEDIUM** — control of the Telegram bot (but not the user's account) | `systemd-creds encrypt` → `/etc/credstore.encrypted/` (encrypted blob, `0600` root) | systemd decrypts to tmpfs at service start | Revoke via @BotFather `/revoke`, re-run setup |
+| **Claude API key** | **MEDIUM** — API billing, access to Claude | `systemd-creds encrypt` → `/etc/credstore.encrypted/` (encrypted blob, `0600` root) | systemd decrypts to tmpfs at service start | Regenerate at console.anthropic.com, re-run setup |
+| **DB auth** | **LOW** — role-scoped, local-only | **No passwords** — Unix socket peer authentication (kernel-verified process UID) | Kernel maps system user → PG role via `pg_ident.conf` | N/A (no password to rotate) |
 
-### Credential Isolation Matrix
+### 6.2 Encryption at Rest
+
+All service credentials are encrypted on disk using `systemd-creds encrypt`:
+
+1. Each credential is encrypted with a **machine-specific key** stored at `/var/lib/systemd/credential.secret` (auto-generated, root-only).
+2. The encrypted blobs live in `/etc/credstore.encrypted/` (root:root 0600). **Plaintext never touches disk.**
+3. At service start, systemd decrypts each blob into a private **tmpfs mount** at `$CREDENTIALS_DIRECTORY`. The plaintext exists only in RAM for the lifetime of the service.
+4. The `--name` flag during encryption binds each blob to a specific credential name, preventing credential-swapping attacks.
+
+**What this protects against**: SD card theft yields only encrypted blobs; without the machine key (also on the card but protected by LUKS if enabled), credentials cannot be recovered. Environment variables are never used for secrets. Config files contain zero secrets.
+
+**What this does NOT protect against**: Root access on a running system can read the decrypted tmpfs mount or use the machine key to decrypt offline. See the Credential Exposure Risk Model below.
+
+### 6.3 Credential Exposure Risk Model
+
+| Attack Vector | Cleartext Accessible? | Likelihood | Mitigation |
+|---|---|---|---|
+| **Root on running system** | Yes — can read `/run/credentials/<service>.service/` or decrypt with machine key | Medium (requires SSH compromise or local root exploit) | Harden SSH (key-only auth, no password login), keep system patched |
+| **SD card physical theft** | Only if machine key is also extracted (on same card by default) | Low–Medium (depends on physical location) | **LUKS full-disk encryption** makes the entire card unreadable without passphrase (see Appendix E) |
+| **Service process compromise** | Only that service's own credentials (systemd per-service injection) | Low (requires exploiting Python code + escaping systemd sandbox) | Sandboxing (NoNewPrivileges, seccomp, capability drop), nftables egress filtering |
+| **Config file / env var leakage** | No — secrets are never in config files or environment variables | N/A | Enforced by architecture |
+| **Memory forensics / cold boot** | Yes — credentials exist in process RAM while running | Very Low (requires physical access + precise timing) | LUKS + encrypted swap |
+| **Compromised pip dependency** | Limited to that service's credentials; nftables blocks exfiltration to unauthorized hosts | Low | Pinned versions, nftables per-UID egress rules |
+
+### 6.4 Credential Isolation Matrix
 
 | Credential | tg-syncer | tg-querybot | postgres | Enforcement |
 |-----------|-----------|-------------|----------|-------------|
-| Telethon session key | **YES** (keychain) | NO | NO | Keychain ACL (user-scoped) |
-| Telethon encrypted session | **YES** (filesystem) | NO | NO | File permissions `0600` + dedicated user |
-| Bot token | NO | **YES** (LoadCredential) | NO | systemd credential injection (per-service) |
-| Claude API key | NO | **YES** (LoadCredential) | NO | systemd credential injection (per-service) |
-| DB password (syncer_role) | **YES** (systemd env) | NO | N/A | systemd environment scope |
-| DB password (querybot_role) | NO | **YES** (systemd env) | N/A | systemd environment scope |
+| Session encryption key | **YES** (`LoadCredentialEncrypted`) | NO | NO | systemd per-service credential injection |
+| Telethon encrypted session | **YES** (filesystem `0600`) | NO | NO | File permissions + dedicated user |
+| Bot token | NO | **YES** (`LoadCredentialEncrypted`) | NO | systemd per-service credential injection |
+| Claude API key | NO | **YES** (`LoadCredentialEncrypted`) | NO | systemd per-service credential injection |
+| DB access | **YES** (peer auth as `tg_syncer`) | **YES** (peer auth as `tg_querybot`) | N/A | Kernel UID verification via Unix socket |
 
 ---
 
@@ -1173,3 +1197,31 @@ This security model is built on the following assumptions. If any assumption is 
 5. Are accepted risks still acceptable given current deployment context?
 6. Have any dependencies published security advisories since last review?
 7. Has Telegram changed any relevant policies or rate limiting behavior?
+
+---
+
+## Appendix E: Full-Disk Encryption (LUKS)
+
+### Why LUKS Matters
+
+`systemd-creds encrypt` protects credentials at rest using a machine-specific key. However, the machine key itself (`/var/lib/systemd/credential.secret`) lives on the same SD card. An attacker with **physical access** to the SD card can extract the machine key and decrypt all credential blobs.
+
+**LUKS full-disk encryption** closes this gap by encrypting the entire filesystem (including the machine key) with a passphrase that exists only in the operator's memory.
+
+### Threat Model Impact
+
+| Scenario | Without LUKS | With LUKS |
+|----------|-------------|-----------|
+| SD card stolen while Pi is powered off | Attacker can extract machine key → decrypt all credentials → full Telegram account access | SD card is unreadable without passphrase |
+| Pi stolen while running | Credentials in RAM (same risk either way) | Same — LUKS protects at rest, not at runtime |
+| Remote SSH compromise | No difference (attacker has runtime access) | No difference |
+
+### Trade-offs
+
+- **Boot friction**: Requires passphrase entry on every reboot (or a USB key / network unlock via `dropbear-initramfs`)
+- **Recovery**: If the passphrase is lost, the data is irrecoverable
+- **Performance**: Minimal impact on Pi 5 (AES-NI equivalent via ARMv8 crypto extensions)
+
+### Recommendation
+
+LUKS is strongly recommended if the Raspberry Pi is in a **shared or semi-public location** (office, dorm, co-living space). For a Pi in the operator's private home, `systemd-creds encrypt` alone provides a reasonable security posture, but LUKS adds meaningful protection against burglary or device loss.

@@ -16,13 +16,15 @@
 # DATABASE
 # =============================================================================
 [database]
-# PostgreSQL connection string. Uses pgvector extension for embedding search.
-# The actual password is injected at runtime from the system keychain --
-# this URL uses a placeholder that the application replaces on startup.
+# PostgreSQL connection via Unix socket with peer authentication.
+# Peer auth is the most secure option: the kernel verifies the connecting
+# process's UID matches the PostgreSQL role — no passwords to manage or leak.
 #
-# Production: uses peer authentication (Unix socket) so no password in URL.
-# Each service connects with its own DB role (syncer_role / querybot_role).
-url = "postgresql://localhost:5432/tg_assistant"
+# Each service specifies its own db_user in its [syncer] / [querybot] section.
+# The system user (tg-syncer, tg-querybot) is mapped to the PG role
+# (tg_syncer, tg_querybot) via pg_ident.conf.
+host = "/var/run/postgresql"
+database = "tg_assistant"
 
 # Connection pool size. Keep low on Raspberry Pi to conserve memory.
 # The syncer needs fewer connections (mostly sequential writes).
@@ -33,6 +35,10 @@ pool_size = 5
 # SYNCER (Telethon / MTProto User API)
 # =============================================================================
 [syncer]
+# PostgreSQL role for the syncer (INSERT + SELECT on messages/chats).
+# Mapped from system user tg-syncer via pg_ident.conf.
+db_user = "tg_syncer"
+
 # Telegram API credentials -- obtain from https://my.telegram.org/apps
 # SECURITY: These are placeholders. The real values are stored in the system
 # keychain and injected via environment variables at runtime by systemd.
@@ -115,6 +121,10 @@ allowed_methods = [
 # QUERY BOT (python-telegram-bot / Bot API + Claude)
 # =============================================================================
 [querybot]
+# PostgreSQL role for the querybot (SELECT only on messages/chats).
+# Mapped from system user tg-querybot via pg_ident.conf.
+db_user = "tg_querybot"
+
 # The bot token is stored in the system keychain, not here.
 # This key tells the application which keychain entry to look up.
 bot_token_keychain_key = "tg-assistant-bot-token"

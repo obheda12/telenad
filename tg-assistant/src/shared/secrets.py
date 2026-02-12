@@ -1,10 +1,13 @@
 """
-Secrets and keychain integration — retrieves credentials from the
-system keychain and handles encrypted session file management.
+Secrets retrieval and encrypted session file management.
 
-Credentials are **never** stored in config files, environment variables,
-or source code.  They live in the system keychain (``secret-tool`` /
-``libsecret``) and are retrieved at runtime.
+Lookup order for secrets (first match wins):
+
+1. **systemd LoadCredential** — ``$CREDENTIALS_DIRECTORY/<key_name>``
+   (production: per-service isolation, root-owned source files in
+   ``/etc/credstore/``, never in env vars or config files).
+2. **System keychain** — ``secret-tool lookup`` (libsecret / GNOME Keyring).
+3. **Environment variable** — ``TG_ASSISTANT_<KEY_NAME>`` (development only).
 
 The Telethon session file is encrypted at rest using Fernet symmetric
 encryption.  It is decrypted into memory only when the syncer starts,
@@ -29,14 +32,20 @@ logger = logging.getLogger("shared.secrets")
 
 
 def get_secret(key_name: str, service: str = "tg-assistant") -> str:
-    """Retrieve a secret from the system keychain.
+    """Retrieve a secret, checking multiple sources in priority order.
 
-    Uses ``secret-tool`` (libsecret) under the hood::
+    Lookup order:
 
-        secret-tool lookup service tg-assistant key <key_name>
-
-    Falls back to environment variables (``TG_ASSISTANT_<KEY_NAME>``) if
-    ``secret-tool`` is not available (e.g. in development environments).
+    1. **systemd LoadCredential** — reads
+       ``$CREDENTIALS_DIRECTORY/<key_name>``.  This is the preferred
+       production mechanism: systemd loads the file from
+       ``/etc/credstore/`` (root:root 0600) and exposes it read-only
+       to the specific service under a private tmpfs mount.
+    2. **System keychain** — ``secret-tool lookup service <service>
+       key <key_name>`` (requires a D-Bus session; works for
+       interactive users but not headless system services).
+    3. **Environment variable** — ``TG_ASSISTANT_<KEY_NAME>``
+       (development / CI only).
 
     Args:
         key_name: The key identifier (e.g. ``"bot_token"``,
@@ -47,8 +56,27 @@ def get_secret(key_name: str, service: str = "tg-assistant") -> str:
         The secret value as a string.
 
     Raises:
-        RuntimeError: If the secret is not found in the keychain or env.
+        RuntimeError: If the secret is not found in any source.
     """
+    # 1. systemd LoadCredential ($CREDENTIALS_DIRECTORY)
+    cred_dir = os.environ.get("CREDENTIALS_DIRECTORY")
+    if cred_dir:
+        cred_path = Path(cred_dir) / key_name
+        try:
+            secret = cred_path.read_text().strip()
+            if secret:
+                logger.debug("Secret '%s' loaded from credentials directory", key_name)
+                return secret
+        except FileNotFoundError:
+            pass
+        except PermissionError:
+            logger.warning(
+                "Permission denied reading credential '%s' from %s",
+                key_name,
+                cred_dir,
+            )
+
+    # 2. System keychain (secret-tool / libsecret)
     try:
         result = subprocess.run(
             ["secret-tool", "lookup", "service", service, "key", key_name],
@@ -71,7 +99,7 @@ def get_secret(key_name: str, service: str = "tg-assistant") -> str:
             exc_info=True,
         )
 
-    # Dev fallback: environment variable
+    # 3. Environment variable (development / CI only)
     env_key = f"TG_ASSISTANT_{key_name.upper().replace('-', '_')}"
     env_val = os.environ.get(env_key)
     if env_val:
@@ -79,8 +107,8 @@ def get_secret(key_name: str, service: str = "tg-assistant") -> str:
         return env_val
 
     raise RuntimeError(
-        f"Secret '{key_name}' not found in keychain (service={service}) "
-        f"or environment variable {env_key}"
+        f"Secret '{key_name}' not found in credentials directory, "
+        f"keychain (service={service}), or environment variable {env_key}"
     )
 
 

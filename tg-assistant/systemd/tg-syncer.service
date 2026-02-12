@@ -54,17 +54,19 @@ Environment=PYTHONPATH=/opt/tg-assistant/src
 Environment=PYTHONDONTWRITEBYTECODE=1
 
 # -----------------------------------------------------------------------------
-# Credential injection via systemd LoadCredential
+# Credential injection via systemd-creds (encrypted at rest)
 # -----------------------------------------------------------------------------
-# Credentials are loaded from /etc/credstore/ at service start and exposed
-# to the process as files under $CREDENTIALS_DIRECTORY (typically
-# /run/credentials/tg-syncer.service/). The application reads them from
-# there -- they never touch environment variables or the config file.
+# Credentials are encrypted on disk using a machine-specific key
+# (/var/lib/systemd/credential.secret). At service start, systemd decrypts
+# them into a private tmpfs mount at $CREDENTIALS_DIRECTORY — the plaintext
+# exists only in RAM, never on disk.
 #
-# SECURITY: /etc/credstore/ files are root:root 0600. The service can only
-# read the specific credentials listed here, nothing else.
-LoadCredential=telethon-session-key:/etc/credstore/telethon-session-key
-LoadCredential=db-password:/etc/credstore/tg-syncer-db-password
+# The --name flag during encryption binds each blob to its credential name,
+# preventing credential-swapping attacks.
+#
+# Credential names MUST match the key_name passed to get_secret() in Python.
+# DB auth uses Unix socket peer authentication — no password credential needed.
+LoadCredentialEncrypted=session_encryption_key:/etc/credstore.encrypted/session_encryption_key
 
 # -----------------------------------------------------------------------------
 # Restart policy

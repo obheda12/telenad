@@ -252,8 +252,10 @@ async def main() -> None:
     session_key = get_secret("session_encryption_key")
     session = decrypt_session_file(session_path, session_key)
 
-    # --- database ---
-    pool = await get_connection_pool(config["database"])
+    # --- database (Unix socket + peer auth) ---
+    db_config = dict(config["database"])
+    db_config["user"] = config["syncer"].get("db_user", "tg_syncer")
+    pool = await get_connection_pool(db_config)
     await init_database(pool)
     store = MessageStore(pool)
     audit = AuditLogger(pool)

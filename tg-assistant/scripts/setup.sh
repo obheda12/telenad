@@ -210,47 +210,37 @@ phase_collect_credentials() {
         exit 1
     fi
 
-    # --- Store credentials in keychain ---
+    # --- Encrypt credentials with systemd-creds (encrypted at rest) ---
     echo "----------------------------------------------"
     echo ""
-    log_info "Storing credentials in system keychain..."
+    log_info "Encrypting credentials with systemd-creds..."
     echo ""
 
-    KEYCHAIN_OK=true
+    # Create encrypted credstore directory (root:root, mode 700)
+    mkdir -p /etc/credstore.encrypted
+    chmod 700 /etc/credstore.encrypted
+    chown root:root /etc/credstore.encrypted
 
-    if command -v secret-tool &>/dev/null; then
-        echo -n "${COLLECT_API_ID}" | secret-tool store --label="tg-api-id" service tg-assistant key api_id 2>/dev/null && \
-            log_success "API ID stored in keychain" || \
-            { log_warn "Could not store API ID in keychain"; KEYCHAIN_OK=false; }
-
-        echo -n "${COLLECT_API_HASH}" | secret-tool store --label="tg-api-hash" service tg-assistant key api_hash 2>/dev/null && \
-            log_success "API hash stored in keychain" || \
-            { log_warn "Could not store API hash in keychain"; KEYCHAIN_OK=false; }
-
-        echo -n "${COLLECT_BOT_TOKEN}" | secret-tool store --label="tg-querybot-token" service tg-assistant key bot_token 2>/dev/null && \
-            log_success "Bot token stored in keychain" || \
-            { log_warn "Could not store bot token in keychain"; KEYCHAIN_OK=false; }
-
-        echo -n "${COLLECT_ANTHROPIC_KEY}" | secret-tool store --label="tg-claude-key" service tg-assistant key anthropic_api_key 2>/dev/null && \
-            log_success "Anthropic API key stored in keychain" || \
-            { log_warn "Could not store Anthropic key in keychain"; KEYCHAIN_OK=false; }
-    else
-        log_warn "secret-tool not available"
-        KEYCHAIN_OK=false
+    if ! command -v systemd-creds &>/dev/null; then
+        log_error "systemd-creds not found. Requires systemd 250+."
+        log_error "Check: systemctl --version"
+        exit 1
     fi
 
-    if [[ "${KEYCHAIN_OK}" == false ]]; then
-        echo ""
-        log_warn "Some credentials could not be stored in the keychain."
-        log_warn "You can set them as environment variables instead:"
-        echo ""
-        echo "  export TG_ASSISTANT_API_ID='<your-api-id>'"
-        echo "  export TG_ASSISTANT_API_HASH='<your-api-hash>'"
-        echo "  export TG_ASSISTANT_BOT_TOKEN='<your-bot-token>'"
-        echo "  export TG_ASSISTANT_ANTHROPIC_API_KEY='<your-key>'"
-        echo ""
-        log_warn "Add these to the systemd service files or a secure env file."
-    fi
+    # Encrypt each credential with systemd-creds.
+    # --name binds the blob to a specific credential name (prevents swapping).
+    # The encrypted blob is stored on disk; plaintext exists only in RAM
+    # when systemd decrypts it at service start via LoadCredentialEncrypted=.
+    _encrypt_credential() {
+        local name="$1" value="$2"
+        printf '%s' "${value}" | systemd-creds encrypt --name="${name}" - "/etc/credstore.encrypted/${name}"
+        chmod 600 "/etc/credstore.encrypted/${name}"
+        chown root:root "/etc/credstore.encrypted/${name}"
+        log_success "Encrypted credential: ${name}"
+    }
+
+    _encrypt_credential "tg-assistant-bot-token" "${COLLECT_BOT_TOKEN}"
+    _encrypt_credential "tg-assistant-claude-api-key" "${COLLECT_ANTHROPIC_KEY}"
 
     log_success "Credential collection complete"
 }
@@ -392,23 +382,13 @@ async def main():
     print(f"  Encrypted session saved to: {encrypted_path}")
     print(f"  Unencrypted session file removed.")
 
-    # Store the Fernet key in the system keychain
-    try:
-        import keyring
-        keyring.set_password("tg-assistant", "telethon_session_key", fernet_key.decode())
-        print("  Encryption key stored in system keychain.")
-    except Exception as e:
-        print(f"\n  WARNING: Could not store key in system keychain: {e}")
-        print(f"  You MUST store this encryption key securely:")
-        print(f"  {fernet_key.decode()}")
-        print(f"\n  Store it with:")
-        print(f"  secret-tool store --label='tg-session-key' service tg-assistant key telethon_session_key")
-        key_file = os.path.join(session_dir, ".fernet_key.tmp")
-        with open(key_file, "w") as f:
-            f.write(fernet_key.decode())
-        os.chmod(key_file, 0o600)
-        print(f"\n  Key also written to: {key_file}")
-        print(f"  DELETE THIS FILE after storing the key: sudo shred -u {key_file}")
+    # Write the Fernet key to a temp file for the shell script to encrypt
+    # with systemd-creds. The temp file is shredded immediately after.
+    key_tmp = os.path.join(session_dir, ".fernet_key.tmp")
+    with open(key_tmp, "w") as f:
+        f.write(fernet_key.decode())
+    os.chmod(key_tmp, 0o600)
+    print(f"  Fernet key written to temp file (will be encrypted + shredded).")
 
     # Verify the encrypted session works
     print("\n  Verifying encrypted session can be decrypted and used...")
@@ -472,6 +452,24 @@ PYEOF
                 shred -u "${f}" 2>/dev/null || rm -f "${f}"
             fi
         done
+
+        # Encrypt the Fernet key with systemd-creds and shred the temp file
+        KEY_TMP="${SESSION_DIR}/.fernet_key.tmp"
+        if [[ -f "${KEY_TMP}" ]]; then
+            log_info "Encrypting session key with systemd-creds..."
+            systemd-creds encrypt --name=session_encryption_key \
+                "${KEY_TMP}" /etc/credstore.encrypted/session_encryption_key
+            chmod 600 /etc/credstore.encrypted/session_encryption_key
+            chown root:root /etc/credstore.encrypted/session_encryption_key
+            log_success "Session key encrypted in credstore"
+
+            # Shred the plaintext temp file
+            shred -u "${KEY_TMP}" 2>/dev/null || rm -f "${KEY_TMP}"
+            log_success "Plaintext key file shredded"
+        else
+            log_error "Fernet key temp file not found — session key NOT stored"
+            return 1
+        fi
 
         log_success "Telethon session created and encrypted"
     else

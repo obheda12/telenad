@@ -152,12 +152,11 @@ flowchart TB
             FW2["tg-querybot → TG Bot API +<br/>api.anthropic.com only"]
         end
 
-        subgraph Keychain["System Keychain (AES-256-GCM)"]
+        subgraph Keychain["systemd-creds (AES-256-GCM, encrypted at rest)"]
             direction LR
-            K1["Telethon session key"]
-            K2["Bot token"]
-            K3["Claude API key"]
-            K4["DB credentials"]
+            K1["Telethon session key<br/>(tg-syncer only)"]
+            K2["Bot token<br/>(tg-querybot only)"]
+            K3["Claude API key<br/>(tg-querybot only)"]
         end
     end
 
@@ -178,7 +177,7 @@ flowchart TB
 | **Network (nftables)** | Per-process IP allowlists at kernel level | Kernel exploit |
 | **Process Isolation** | Separate processes, users, DB roles | Privilege escalation |
 | **Read-Only Wrapper** | Telethon allowlist pattern (not blocklist) | Python runtime exploit |
-| **Credential Isolation** | System keychain, never in env/files | Keychain compromise |
+| **Credential Isolation** | systemd-creds encrypt (AES-256-GCM), per-service credentials, peer auth | Root + machine key extraction |
 | **Audit** | All API calls logged, tamper-evident | Log deletion (mitigated by append-only) |
 
 ### Process Isolation Model
@@ -225,6 +224,7 @@ Full comparison: [`tg-assistant/docs/TELETHON_HARDENING.md`](tg-assistant/docs/T
 | **Data exfiltration** | **HIGH** | Compromised process phones home | Per-UID nftables: syncer→TG only, querybot→TG+Anthropic only | Kernel exploit to bypass netfilter |
 | **Unauthorized bot access** | **HIGH** | Attacker messages the bot | Hardcoded `owner_id` check, all others silently ignored | Telegram user ID spoof (not possible) |
 | **Privilege escalation** | **HIGH** | Exploit in any service pivots to others | Separate users, `NoNewPrivileges`, dropped capabilities, syscall filter | Kernel exploit |
+| **Credential exposure** | **CRITICAL** | Physical theft, privilege escalation, memory dump | systemd-creds encrypt (AES-256-GCM), per-service isolation, peer auth, no plaintext on disk | Kernel exploit + machine key extraction |
 | **Prompt injection** | **MEDIUM** | Malicious message in synced data | Trust hierarchy in system prompt, data minimization, no write path | LLM manipulation (misleading summary) |
 | **Account ban** | **MEDIUM** | Bot-like behavior triggers Telegram | Conservative rate limits, human-like patterns, exponential backoff | Telegram policy change |
 | **Supply chain** | **MEDIUM** | Compromised Python dependency | Pinned versions, nftables limits blast radius, systemd confinement | In-memory session accessible to compromised syncer |
@@ -236,6 +236,8 @@ Full comparison: [`tg-assistant/docs/TELETHON_HARDENING.md`](tg-assistant/docs/T
 **Unintended writes** — Telethon's `TelegramClient` has full read/write access to your account. The syncer wraps it in `ReadOnlyTelegramClient` using an **allowlist** — only 15 read methods are permitted, everything else raises `PermissionError`. This is an allowlist, not a blocklist: new Telethon methods in future updates are blocked by default until reviewed.
 
 **Data exfiltration** — Per-UID nftables rules restrict each process to specific IPs at the kernel level. The syncer can only reach Telegram MTProto data centers (`149.154.160.0/20`, `91.108.0.0/16`). The querybot can only reach `api.telegram.org` and `api.anthropic.com`. All other outbound traffic — including to LAN hosts — is dropped. Even with code execution, a compromised process cannot phone home.
+
+**Credential exposure** — The system manages three high-value secrets: a Telethon session key (full Telegram account access), a Bot API token (bot impersonation), and a Claude API key (billing). All credentials are encrypted at rest using `systemd-creds encrypt` (AES-256-GCM with a machine-specific key in `/var/lib/systemd/credential.secret`). At service start, systemd decrypts them into a private RAM-only tmpfs mount — plaintext never touches disk. Each service can only access its own credentials (the querybot cannot read the Telethon session key, and the syncer cannot read the bot token or Claude key). Database authentication uses Unix socket peer auth — no passwords exist. An attacker would need to: (1) gain code execution on the Pi, (2) escalate to root or the specific service user (blocked by `NoNewPrivileges`, dropped capabilities, syscall filtering), and (3) extract the machine key from `/var/lib/systemd/credential.secret` (readable only by root). Full-disk encryption (LUKS) is recommended as an additional layer against physical theft — see [SECURITY_MODEL.md](tg-assistant/docs/SECURITY_MODEL.md) Appendix E.
 
 **Prompt injection** — Malicious messages in synced chats could contain adversarial instructions that Claude sees as context. The architecture constrains the blast radius: the system prompt treats message content as untrusted, only top-K messages go to Claude (not the full DB), and there is no write path — even a manipulated Claude cannot send messages, access files, or modify the database. Worst outcome: a misleading summary shown to the owner.
 
@@ -250,9 +252,10 @@ flowchart TD
     Attack --> A1["Steal Telethon Session"]
     Attack --> A2["Prompt Injection via Chat"]
     Attack --> A3["Compromise Query Bot"]
+    Attack --> A4["Extract Credentials"]
 
     A1 --> S1{"Encrypted at rest?"}
-    S1 -->|"Yes"| S2{"Keychain access?"}
+    S1 -->|"Yes (systemd-creds)"| S2{"Service user access?"}
     S2 -->|"Blocked (dedicated user)"| Block1["BLOCKED"]
     S2 -->|"Privilege escalation"| S3{"Kernel exploit?"}
     S3 -->|"Required"| Block2["BLOCKED<br/>(defense in depth)"]
@@ -267,9 +270,15 @@ flowchart TD
     A3 --> B1{"Network access?"}
     B1 -->|"nftables: only TG + Anthropic"| Block3["BLOCKED"]
 
+    A4 --> C1{"Plaintext on disk?"}
+    C1 -->|"No (encrypted at rest)"| C2{"RAM access?"}
+    C2 -->|"Root required"| C3{"Root escalation?"}
+    C3 -->|"NoNewPrivileges + syscall filter"| Block4["BLOCKED"]
+
     style Block1 fill:#c8e6c9
     style Block2 fill:#c8e6c9
     style Block3 fill:#c8e6c9
+    style Block4 fill:#c8e6c9
     style Safe1 fill:#c8e6c9
     style P4 fill:#fff3e0
 ```
@@ -466,10 +475,11 @@ If you suspect a compromise:
 | # | Limitation | Severity |
 |---|------------|----------|
 | 1 | Telethon session = full account access if stolen | **CRITICAL** |
-| 2 | LLM reasoning manipulation via prompt injection | **MEDIUM** |
-| 3 | Claude API sees message content (cloud) | **MEDIUM** |
-| 4 | Python runtime relies on process isolation, not memory sandbox | **LOW** |
-| 5 | Supply chain (Python packages) | **LOW** |
+| 2 | Credentials decrypted in RAM at runtime — root can read process memory | **HIGH** |
+| 3 | LLM reasoning manipulation via prompt injection | **MEDIUM** |
+| 4 | Claude API sees message content (cloud) | **MEDIUM** |
+| 5 | Python runtime relies on process isolation, not memory sandbox | **LOW** |
+| 6 | Supply chain (Python packages) | **LOW** |
 
 Full threat model with risk matrix and accepted risks: [`tg-assistant/docs/SECURITY_MODEL.md`](tg-assistant/docs/SECURITY_MODEL.md)
 

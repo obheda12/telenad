@@ -301,11 +301,9 @@ deploy_config() {
     if [[ -f "${CONFIG_SOURCE}/settings.toml" ]]; then
         cp "${CONFIG_SOURCE}/settings.toml" "${CONFIG_DIR}/settings.toml"
 
-        # Inject generated database passwords
-        sed -i "s|SYNCER_DB_PASS_PLACEHOLDER|${DB_SYNCER_PASS}|g" "${CONFIG_DIR}/settings.toml"
-        sed -i "s|QUERYBOT_DB_PASS_PLACEHOLDER|${DB_QUERYBOT_PASS}|g" "${CONFIG_DIR}/settings.toml"
-
-        chmod 600 "${CONFIG_DIR}/settings.toml"
+        # settings.toml contains no secrets (credentials are in /etc/credstore/).
+        # Readable by service users so they can load non-secret config at startup.
+        chmod 644 "${CONFIG_DIR}/settings.toml"
         chown root:root "${CONFIG_DIR}/settings.toml"
         log_success "settings.toml deployed"
     else
@@ -564,6 +562,49 @@ REVOKE CREATE ON SCHEMA public FROM querybot_role;
 
 EOF
 
+    # -----------------------------------------------------------------------
+    # Configure peer authentication for Unix socket connections.
+    # Maps system users (tg-syncer, tg-querybot) to PG roles (tg_syncer,
+    # tg_querybot) so no passwords are needed — the kernel verifies identity.
+    # -----------------------------------------------------------------------
+    PG_CONF_DIR=$(sudo -u postgres psql -qAt -c "SHOW data_directory" 2>/dev/null | head -1)
+    if [[ -z "${PG_CONF_DIR}" ]]; then
+        PG_CONF_DIR="/etc/postgresql/$(ls /etc/postgresql/ 2>/dev/null | tail -1)/main"
+    fi
+
+    if [[ -d "${PG_CONF_DIR}" ]]; then
+        # pg_ident.conf: map system user → PG role
+        IDENT_FILE="${PG_CONF_DIR}/pg_ident.conf"
+        for MAPPING in "tg-assistant tg-syncer tg_syncer" "tg-assistant tg-querybot tg_querybot"; do
+            if ! grep -qF "${MAPPING}" "${IDENT_FILE}" 2>/dev/null; then
+                echo "${MAPPING}" >> "${IDENT_FILE}"
+            fi
+        done
+        log_success "pg_ident.conf: system user → PG role mappings added"
+
+        # pg_hba.conf: allow peer auth for our users on the tg_assistant DB
+        HBA_FILE="${PG_CONF_DIR}/pg_hba.conf"
+        for PG_USER in "${DB_SYNCER_USER}" "${DB_QUERYBOT_USER}"; do
+            HBA_LINE="local   ${DB_NAME}       ${PG_USER}                              peer map=tg-assistant"
+            if ! grep -qF "${PG_USER}" "${HBA_FILE}" 2>/dev/null || ! grep -qF "tg-assistant" "${HBA_FILE}" 2>/dev/null; then
+                # Insert before the first generic "local all all" line
+                if grep -qn "^local.*all.*all" "${HBA_FILE}"; then
+                    LINE_NUM=$(grep -n "^local.*all.*all" "${HBA_FILE}" | head -1 | cut -d: -f1)
+                    sed -i "${LINE_NUM}i\\${HBA_LINE}" "${HBA_FILE}"
+                else
+                    echo "${HBA_LINE}" >> "${HBA_FILE}"
+                fi
+            fi
+        done
+        log_success "pg_hba.conf: peer authentication rules added"
+
+        # Reload PostgreSQL to pick up config changes
+        systemctl reload postgresql 2>/dev/null || sudo -u postgres pg_ctl reload -D "${PG_CONF_DIR}" 2>/dev/null || true
+        log_success "PostgreSQL configuration reloaded"
+    else
+        log_warn "Could not find PostgreSQL config directory -- configure pg_hba.conf manually"
+    fi
+
     log_success "PostgreSQL configured"
     log_info "Database:     ${DB_NAME}"
     log_info "Syncer role:  ${DB_SYNCER_USER}"
@@ -596,9 +637,10 @@ set_permissions() {
     chown root:root "${CONFIG_DIR}"
     chmod 755 "${CONFIG_DIR}"
 
-    # settings.toml: root-only (services read via systemd LoadCredential or env injection)
+    # settings.toml: readable by service users (contains no secrets —
+    # all credentials are in /etc/credstore/ via systemd LoadCredential)
     if [[ -f "${CONFIG_DIR}/settings.toml" ]]; then
-        chmod 600 "${CONFIG_DIR}/settings.toml"
+        chmod 644 "${CONFIG_DIR}/settings.toml"
         chown root:root "${CONFIG_DIR}/settings.toml"
     fi
 
@@ -659,25 +701,9 @@ print_summary() {
     echo "  Or continue manually -- see docs/QUICKSTART.md for steps."
     echo ""
 
-    # Save database passwords to a temporary secure file
-    CREDS_FILE="${CONFIG_DIR}/.db_credentials"
-    cat > "${CREDS_FILE}" << CREDEOF
-# Telegram Personal Assistant -- Database Credentials
-# Generated: $(date -Iseconds)
-# DELETE THIS FILE after storing credentials in your password manager.
-
-DB_NAME=${DB_NAME}
-DB_SYNCER_USER=${DB_SYNCER_USER}
-DB_SYNCER_PASS=${DB_SYNCER_PASS}
-DB_QUERYBOT_USER=${DB_QUERYBOT_USER}
-DB_QUERYBOT_PASS=${DB_QUERYBOT_PASS}
-CREDEOF
-    chmod 600 "${CREDS_FILE}"
-    chown root:root "${CREDS_FILE}"
-
-    log_warn "Database passwords saved to ${CREDS_FILE}"
-    log_warn "Store these in your password manager, then delete the file:"
-    log_warn "  sudo shred -u ${CREDS_FILE}"
+    # DB passwords are only needed for the initial role creation above.
+    # Production services use peer auth (Unix socket) — no passwords required.
+    log_info "Database uses peer auth over Unix socket — no password files needed."
 }
 
 # ---------------------------------------------------------------------------

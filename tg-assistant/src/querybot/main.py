@@ -119,8 +119,10 @@ async def build_application(config: Dict[str, Any]) -> Application:
     # 2. Create Application
     app = Application.builder().token(bot_token).build()
 
-    # 3. Initialise infrastructure
-    pool = await get_connection_pool(config["database"])
+    # 3. Initialise infrastructure (Unix socket + peer auth)
+    db_config = dict(config["database"])
+    db_config["user"] = config["querybot"].get("db_user", "tg_querybot")
+    pool = await get_connection_pool(db_config)
     await init_database(pool)
 
     audit_log_path = Path(
