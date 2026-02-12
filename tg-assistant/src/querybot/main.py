@@ -14,7 +14,6 @@ Key behaviours:
 
 from __future__ import annotations
 
-import asyncio
 import logging
 from pathlib import Path
 from typing import Any, Dict
@@ -101,7 +100,7 @@ def build_owner_filter(owner_id: int) -> filters.BaseFilter:
 # ---------------------------------------------------------------------------
 
 
-async def build_application(config: Dict[str, Any]) -> Application:
+def build_application(config: Dict[str, Any]) -> Application:
     """Construct and configure the ``python-telegram-bot`` Application.
 
     Wires up:
@@ -112,55 +111,63 @@ async def build_application(config: Dict[str, Any]) -> Application:
         - Command handlers (``/start``, ``/help``, ``/stats``).
         - Free-text message handler (owner-only).
         - Global error handler.
+
+    Async initialisation (DB pool, etc.) is deferred to ``post_init``
+    so that ``run_polling()`` manages the single event loop — required
+    for Python 3.12+ where ``asyncio.get_event_loop()`` raises
+    ``RuntimeError`` when no loop is running.
     """
     # 1. Retrieve bot token from keychain
     bot_token = get_secret(config["querybot"]["bot_token_keychain_key"])
 
-    # 2. Create Application
-    app = Application.builder().token(bot_token).build()
+    async def _post_init(app: Application) -> None:
+        """Called by python-telegram-bot inside the running event loop."""
+        # 3. Initialise infrastructure (Unix socket + peer auth)
+        db_config = dict(config["database"])
+        db_config["user"] = config["querybot"].get("db_user", "tg_querybot")
+        pool = await get_connection_pool(db_config)
+        await init_database(pool)
 
-    # 3. Initialise infrastructure (Unix socket + peer auth)
-    db_config = dict(config["database"])
-    db_config["user"] = config["querybot"].get("db_user", "tg_querybot")
-    pool = await get_connection_pool(db_config)
-    await init_database(pool)
+        audit_log_path = Path(
+            config.get("security", {}).get("log_file", "/var/log/tg-assistant/audit.log")
+        )
+        audit = AuditLogger(pool, log_path=audit_log_path)
 
-    audit_log_path = Path(
-        config.get("security", {}).get("log_file", "/var/log/tg-assistant/audit.log")
-    )
-    audit = AuditLogger(pool, log_path=audit_log_path)
+        embedder = create_embedding_provider(config.get("embeddings", {}))
+        search = MessageSearch(pool, embedder)
 
-    embedder = create_embedding_provider(config.get("embeddings", {}))
-    search = MessageSearch(pool, embedder)
+        claude_config = config["querybot"]["claude"]
+        claude_api_key = get_secret(claude_config["api_key_keychain_key"])
+        llm = ClaudeAssistant(
+            api_key=claude_api_key,
+            model=claude_config.get("model", "claude-sonnet-4-5-20250929"),
+            max_queries_per_minute=config["querybot"].get("max_queries_per_minute", 20),
+        )
 
-    claude_config = config["querybot"]["claude"]
-    claude_api_key = get_secret(claude_config["api_key_keychain_key"])
-    llm = ClaudeAssistant(
-        api_key=claude_api_key,
-        model=claude_config.get("model", "claude-sonnet-4-5-20250929"),
-        max_queries_per_minute=config["querybot"].get("max_queries_per_minute", 20),
-    )
+        owner_id = config["querybot"]["owner_telegram_id"]
 
-    owner_id = config["querybot"]["owner_telegram_id"]
+        security_config = config.get("security", {})
+        sanitizer = ContentSanitizer(
+            enabled=security_config.get("detect_prompt_injection", True),
+        )
+        input_validator = InputValidator(
+            max_length=security_config.get("max_input_length", 4000),
+        )
 
-    security_config = config.get("security", {})
-    sanitizer = ContentSanitizer(
-        enabled=security_config.get("detect_prompt_injection", True),
-    )
-    input_validator = InputValidator(
-        max_length=security_config.get("max_input_length", 4000),
-    )
+        # 4. Store in bot_data for handler access
+        app.bot_data["owner_id"] = owner_id
+        app.bot_data["search"] = search
+        app.bot_data["llm"] = llm
+        app.bot_data["audit"] = audit
+        app.bot_data["pool"] = pool
+        app.bot_data["sanitizer"] = sanitizer
+        app.bot_data["input_validator"] = input_validator
 
-    # 4. Store in bot_data for handler access
-    app.bot_data["owner_id"] = owner_id
-    app.bot_data["search"] = search
-    app.bot_data["llm"] = llm
-    app.bot_data["audit"] = audit
-    app.bot_data["pool"] = pool
-    app.bot_data["sanitizer"] = sanitizer
-    app.bot_data["input_validator"] = input_validator
+    # 2. Create Application with post_init for async setup
+    app = Application.builder().token(bot_token).post_init(_post_init).build()
 
     # 5. Register handlers with owner filter
+    owner_id = config["querybot"]["owner_telegram_id"]
     owner_filter = build_owner_filter(owner_id)
     app.add_handler(CommandHandler("start", handle_start, filters=owner_filter))
     app.add_handler(CommandHandler("help", handle_help, filters=owner_filter))
@@ -190,8 +197,9 @@ def run() -> None:
 
     config = load_config()
 
-    # python-telegram-bot manages its own event loop via run_polling()
-    app = asyncio.run(build_application(config))
+    # python-telegram-bot manages the event loop via run_polling();
+    # async init (DB pool, etc.) happens in post_init callback.
+    app = build_application(config)
     app.run_polling(allowed_updates=Update.ALL_TYPES)
 
 
