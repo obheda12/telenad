@@ -501,59 +501,54 @@ GRANT querybot_role TO ${DB_QUERYBOT_USER};
 
 -- =========================================================================
 -- Schema: messages
+-- NOTE: This schema MUST match src/shared/db.py init_database() exactly.
+-- The application code references these column names directly.
 -- =========================================================================
 CREATE TABLE IF NOT EXISTS messages (
-    id              BIGSERIAL PRIMARY KEY,
-    telegram_msg_id BIGINT NOT NULL,
-    chat_id         BIGINT NOT NULL,
-    chat_title      VARCHAR(255),
-    sender_id       BIGINT,
-    sender_name     VARCHAR(255),
-    content         TEXT NOT NULL,
-    message_type    VARCHAR(50) DEFAULT 'text',
-    reply_to_msg_id BIGINT,
-    timestamp       TIMESTAMPTZ NOT NULL,
-    synced_at       TIMESTAMPTZ DEFAULT NOW(),
-    embedding       vector(1024),
-    UNIQUE(telegram_msg_id, chat_id)
+    message_id         BIGINT NOT NULL,
+    chat_id            BIGINT NOT NULL,
+    sender_id          BIGINT,
+    sender_name        TEXT,
+    timestamp          TIMESTAMPTZ NOT NULL,
+    text               TEXT,
+    raw_json           JSONB,
+    embedding          vector(1024),
+    text_search_vector TSVECTOR
+        GENERATED ALWAYS AS (
+            to_tsvector('english', COALESCE(text, ''))
+        ) STORED,
+    PRIMARY KEY (message_id, chat_id)
 );
 
-CREATE INDEX IF NOT EXISTS idx_messages_chat_id ON messages(chat_id);
-CREATE INDEX IF NOT EXISTS idx_messages_sender_id ON messages(sender_id);
-CREATE INDEX IF NOT EXISTS idx_messages_timestamp ON messages(timestamp);
-CREATE INDEX IF NOT EXISTS idx_messages_content_trgm ON messages USING gin(content gin_trgm_ops);
+CREATE INDEX IF NOT EXISTS idx_messages_fts
+    ON messages USING GIN (text_search_vector);
+CREATE INDEX IF NOT EXISTS idx_messages_chat_timestamp
+    ON messages (chat_id, timestamp DESC);
+CREATE INDEX IF NOT EXISTS idx_messages_timestamp
+    ON messages (timestamp DESC);
 
 -- =========================================================================
 -- Schema: chats
 -- =========================================================================
 CREATE TABLE IF NOT EXISTS chats (
-    id              BIGSERIAL PRIMARY KEY,
-    chat_id         BIGINT UNIQUE NOT NULL,
-    chat_title      VARCHAR(255),
-    chat_type       VARCHAR(50),
-    last_synced_id  BIGINT DEFAULT 0,
-    last_synced_at  TIMESTAMPTZ,
-    created_at      TIMESTAMPTZ DEFAULT NOW()
+    chat_id           BIGINT PRIMARY KEY,
+    title             TEXT,
+    chat_type         TEXT,
+    participant_count INTEGER,
+    updated_at        TIMESTAMPTZ DEFAULT NOW()
 );
-
-CREATE INDEX IF NOT EXISTS idx_chats_chat_id ON chats(chat_id);
 
 -- =========================================================================
 -- Schema: audit_log
 -- =========================================================================
 CREATE TABLE IF NOT EXISTS audit_log (
-    id              BIGSERIAL PRIMARY KEY,
-    timestamp       TIMESTAMPTZ DEFAULT NOW(),
-    service         VARCHAR(50) NOT NULL,
-    action          VARCHAR(100) NOT NULL,
-    details         JSONB,
-    user_id         BIGINT,
-    success         BOOLEAN DEFAULT true,
-    error_message   TEXT
+    id        BIGSERIAL PRIMARY KEY,
+    timestamp TIMESTAMPTZ DEFAULT NOW(),
+    service   TEXT NOT NULL,
+    action    TEXT NOT NULL,
+    details   JSONB,
+    success   BOOLEAN NOT NULL
 );
-
-CREATE INDEX IF NOT EXISTS idx_audit_log_timestamp ON audit_log(timestamp);
-CREATE INDEX IF NOT EXISTS idx_audit_log_service ON audit_log(service);
 
 -- =========================================================================
 -- Permissions: syncer_role (INSERT + SELECT on messages/chats, INSERT on audit_log)
