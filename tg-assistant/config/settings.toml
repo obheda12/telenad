@@ -50,7 +50,7 @@ api_hash = "YOUR_API_HASH"   # 32-character hex string
 # CRITICAL: A stolen session file grants FULL account access (read, write,
 # delete, change settings). This is why we encrypt it and restrict access
 # to the tg-syncer user only (0600 permissions).
-session_path = "/var/lib/tg-syncer/.telethon/tg-assistant.session"
+session_path = "/var/lib/tg-syncer/tg_syncer_session.session.enc"
 
 # How often to poll for new messages (seconds).
 # Lower = more responsive but higher risk of rate limiting.

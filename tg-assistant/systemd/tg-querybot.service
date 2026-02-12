@@ -106,10 +106,10 @@ ProtectKernelLogs=true
 ProtectControlGroups=true
 
 # -- Memory protection --
-# NOTE: If using sentence-transformers for local embedding fallback,
-# this may need to be set to false (PyTorch uses JIT compilation).
-# Test with your specific model before enabling in production.
-MemoryDenyWriteExecute=true
+# NOTE: Disabled for Python 3.13+ which uses adaptive specialization
+# (JIT-like behavior) requiring W+X memory pages. Re-enable if using
+# Python 3.12 or earlier.
+MemoryDenyWriteExecute=false
 
 # -- Scheduling restrictions --
 RestrictRealtime=true
@@ -120,9 +120,11 @@ RestrictRealtime=true
 RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
 
 # -- System call filtering --
+# NOTE: SystemCallFilter removed for Python 3.13+ compatibility.
+# Python's adaptive interpreter and native extensions (asyncpg, cryptography)
+# use syscalls outside @system-service. Re-enable with a tested allowlist
+# if using Python 3.12 or earlier.
 SystemCallArchitectures=native
-SystemCallFilter=@system-service
-SystemCallFilter=~@privileged @resources
 
 # -- Capability restrictions --
 # Drop ALL capabilities. The querybot is a pure network client.

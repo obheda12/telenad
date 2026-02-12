@@ -37,7 +37,7 @@ log_error()   { echo -e "${RED}[ERROR]${NC} $1"; }
 # ---------------------------------------------------------------------------
 SYNCER_USER="tg-syncer"
 SYNCER_HOME="/home/${SYNCER_USER}"
-SESSION_DIR="${SYNCER_HOME}/.telethon"
+SESSION_DIR="/var/lib/tg-syncer"
 SESSION_NAME="tg_syncer_session"
 SESSION_FILE="${SESSION_DIR}/${SESSION_NAME}.session"
 ENCRYPTED_FILE="${SESSION_DIR}/${SESSION_NAME}.session.enc"

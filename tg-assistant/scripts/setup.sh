@@ -54,7 +54,7 @@ QUERYBOT_USER="tg-querybot"
 SYNCER_HOME="/home/${SYNCER_USER}"
 QUERYBOT_HOME="/home/${QUERYBOT_USER}"
 
-SESSION_DIR="${SYNCER_HOME}/.telethon"
+SESSION_DIR="/var/lib/tg-syncer"
 SESSION_NAME="tg_syncer_session"
 SESSION_FILE="${SESSION_DIR}/${SESSION_NAME}.session"
 ENCRYPTED_FILE="${SESSION_DIR}/${SESSION_NAME}.session.enc"
