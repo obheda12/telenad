@@ -6,7 +6,7 @@ telethon==1.36.0                  # MTProto client (User API, used by syncer)
 python-telegram-bot==21.6         # Bot API (used by querybot)
 
 # --- AI / LLM ---
-anthropic==0.39.0                 # Claude API SDK
+anthropic>=0.45.0                 # Claude API SDK (>=0.45 for httpx 0.28+ compat)
 
 # --- Database ---
 asyncpg==0.30.0                   # Async PostgreSQL driver

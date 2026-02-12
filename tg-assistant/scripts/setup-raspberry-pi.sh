@@ -280,8 +280,16 @@ setup_venv() {
 
     pip install --upgrade pip setuptools wheel
 
+    # Look for requirements.txt in project root, then install dir
+    REQ_FILE=""
     if [[ -f "${PROJECT_ROOT}/requirements.txt" ]]; then
-        pip install -r "${PROJECT_ROOT}/requirements.txt"
+        REQ_FILE="${PROJECT_ROOT}/requirements.txt"
+    elif [[ -f "${INSTALL_DIR}/requirements.txt" ]]; then
+        REQ_FILE="${INSTALL_DIR}/requirements.txt"
+    fi
+
+    if [[ -n "${REQ_FILE}" ]]; then
+        pip install -r "${REQ_FILE}"
         log_success "Python dependencies installed from requirements.txt"
     else
         log_warn "requirements.txt not found at ${PROJECT_ROOT}/requirements.txt"
@@ -663,6 +671,12 @@ deploy_application() {
         log_success "Application source deployed to ${INSTALL_DIR}/src"
     else
         log_warn "Source directory not found at ${PROJECT_ROOT}/src -- deploy manually later"
+    fi
+
+    # Deploy requirements.txt so venv setup can find it on re-runs
+    if [[ "${REAL_PROJECT}" != "${REAL_INSTALL}" && -f "${PROJECT_ROOT}/requirements.txt" ]]; then
+        cp "${PROJECT_ROOT}/requirements.txt" "${INSTALL_DIR}/requirements.txt"
+        log_success "requirements.txt deployed"
     fi
 
     # Deploy scripts and install CLI
