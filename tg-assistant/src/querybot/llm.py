@@ -170,6 +170,14 @@ class ClaudeAssistant:
             self._total_input_tokens += response.usage.input_tokens
             self._total_output_tokens += response.usage.output_tokens
 
+            # Strip markdown code fences if Claude wraps the JSON
+            if raw_text.startswith("```"):
+                raw_text = raw_text.split("\n", 1)[-1]  # remove ```json line
+                raw_text = raw_text.rsplit("```", 1)[0]  # remove closing ```
+                raw_text = raw_text.strip()
+
+            logger.debug("Intent raw response: %s", raw_text[:200])
+
             data = json.loads(raw_text)
 
             # Validate and coerce types
@@ -202,9 +210,15 @@ class ClaudeAssistant:
             json.JSONDecodeError, anthropic.APIError,
             KeyError, ValueError, IndexError,
         ) as exc:
+            raw_resp = "<not received>"
+            try:
+                raw_resp = response.content[0].text[:200]
+            except Exception:
+                pass
             logger.warning(
-                "Intent extraction failed (%s), using raw question as search terms",
-                exc,
+                "Intent extraction failed (%s), using raw question as search terms. "
+                "Raw response: %s",
+                exc, raw_resp,
             )
             return QueryIntent(search_terms=user_question)
 
