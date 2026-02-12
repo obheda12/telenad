@@ -1,4 +1,4 @@
-# Telegram Personal Assistant
+# Local First Telegram Personal Assistant
 
 A defense-in-depth personal assistant that syncs ALL your Telegram messages to a local database and lets you query them through a private bot powered by Claude. Deployed on a Raspberry Pi for physical control over your data.
 
