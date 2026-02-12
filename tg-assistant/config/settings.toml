@@ -192,6 +192,10 @@ keychain_service = "tg-assistant"
 # in the database so Claude can be warned about them.
 detect_prompt_injection = true
 
+# Maximum length (characters) for user query messages.
+# Messages exceeding this limit are rejected before entering the pipeline.
+max_input_length = 4000
+
 # Maximum log age before rotation (days).
 max_log_age_days = 30
 

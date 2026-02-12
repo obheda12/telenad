@@ -213,11 +213,18 @@ class ClaudeAssistant:
     # ------------------------------------------------------------------
 
     @staticmethod
+    def _escape_xml(text: str) -> str:
+        """Escape < and > in untrusted text to prevent XML tag injection."""
+        return text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+    @staticmethod
     def _format_context(results: List[SearchResult], max_chars: int = 8000) -> str:
         """Format search results grouped by chat for better LLM comprehension.
 
         Groups messages by chat title, then lists them chronologically
-        within each group. Truncated to ``max_chars``.
+        within each group. Wrapped in XML boundary markers with
+        ``trust_level="untrusted"`` to clearly separate synced content
+        from the system prompt. Truncated to ``max_chars``.
         """
         if not results:
             return "(No relevant messages found in synced chats.)"
@@ -228,18 +235,23 @@ class ClaudeAssistant:
             title = r.chat_title or "Unknown Chat"
             chat_groups.setdefault(title, []).append(r)
 
-        parts: List[str] = []
-        total_len = 0
+        parts: List[str] = [
+            '<message_context source="synced_telegram_messages" trust_level="untrusted">\n'
+        ]
+        total_len = len(parts[0])
 
         for chat_title, msgs in chat_groups.items():
-            header = f"=== {chat_title} ===\n"
+            safe_title = ClaudeAssistant._escape_xml(chat_title)
+            header = f"=== {safe_title} ===\n"
             if total_len + len(header) > max_chars:
                 break
             parts.append(header)
             total_len += len(header)
 
             for r in msgs:
-                entry = f"[{r.timestamp}] {r.sender_name}: {r.text}\n"
+                safe_sender = ClaudeAssistant._escape_xml(r.sender_name or "")
+                safe_text = ClaudeAssistant._escape_xml(r.text or "")
+                entry = f"[{r.timestamp}] {safe_sender}: {safe_text}\n"
                 if total_len + len(entry) > max_chars:
                     break
                 parts.append(entry)
@@ -248,6 +260,7 @@ class ClaudeAssistant:
             parts.append("\n")
             total_len += 1
 
+        parts.append("</message_context>")
         return "".join(parts)
 
     # ------------------------------------------------------------------

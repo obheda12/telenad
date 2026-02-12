@@ -7,3 +7,13 @@ dist/
 build/
 .venv/
 venv/
+
+# Secrets & credentials — never commit these
+.env
+.env.*
+*.session
+*.session-journal
+*.key
+*.pem
+credentials.*
+secrets.toml

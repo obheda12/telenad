@@ -18,6 +18,7 @@ from telegram.ext import ContextTypes
 from querybot.llm import ClaudeAssistant
 from querybot.search import MessageSearch
 from shared.audit import AuditLogger
+from shared.safety import ContentSanitizer, InputValidator
 
 logger = logging.getLogger("querybot.handlers")
 
@@ -188,17 +189,27 @@ async def handle_message(
     """Handle a free-text message — the main query-answer pipeline.
 
     Flow:
+        0. Validate user input (length, null bytes, whitespace).
         1. Fetch chat list (cached) for intent extraction context.
         2. Use Haiku to parse the question into structured filters.
         3. Run filtered search using extracted intent.
         4. Fall back to unfiltered FTS if filtered search returns nothing.
-        5. Send results + question to Sonnet for synthesis.
+        5. Scan search results for prompt-injection patterns (detect + log).
+        6. Send results + question to Sonnet for synthesis.
     """
     question = update.message.text
 
     search: MessageSearch = context.bot_data["search"]
     llm: ClaudeAssistant = context.bot_data["llm"]
     audit: AuditLogger = context.bot_data["audit"]
+    sanitizer: ContentSanitizer = context.bot_data["sanitizer"]
+    validator: InputValidator = context.bot_data["input_validator"]
+
+    # 0. Input validation
+    validation = validator.validate(question)
+    if not validation.valid:
+        await update.message.reply_text(validation.error_message)
+        return
 
     # 1. Get chat list + extract intent
     chat_list = await search.get_chat_list()
@@ -228,14 +239,22 @@ async def handle_message(
         )
         return
 
-    # 4. Ask Claude
+    # 4. Scan search results for injection patterns (detect + log only)
+    injection_warnings_count = 0
+    for r in results:
+        if r.text:
+            scan = sanitizer.sanitize(r.text)
+            if scan.flagged:
+                injection_warnings_count += len(scan.warnings)
+
+    # 5. Ask Claude
     answer = await llm.query(question, results)
 
-    # 5. Reply (split if > 4096 chars — Telegram message limit)
+    # 6. Reply (split if > 4096 chars — Telegram message limit)
     for chunk in _split_message(answer):
         await update.message.reply_text(chunk)
 
-    # 6. Audit (metadata only — never log message content)
+    # 7. Audit (metadata only — never log message content)
     await audit.log(
         "querybot",
         "query",
@@ -246,6 +265,7 @@ async def handle_message(
             "intent_chat_ids": intent.chat_ids,
             "intent_has_search_terms": intent.search_terms is not None,
             "intent_days_back": intent.days_back,
+            "injection_warnings_count": injection_warnings_count,
         },
         success=True,
     )

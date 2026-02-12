@@ -39,6 +39,7 @@ from querybot.llm import ClaudeAssistant
 from querybot.search import MessageSearch
 from shared.audit import AuditLogger
 from shared.db import get_connection_pool, init_database
+from shared.safety import ContentSanitizer, InputValidator
 from shared.secrets import get_secret
 from syncer.embeddings import create_embedding_provider
 
@@ -140,12 +141,22 @@ async def build_application(config: Dict[str, Any]) -> Application:
 
     owner_id = config["querybot"]["owner_telegram_id"]
 
+    security_config = config.get("security", {})
+    sanitizer = ContentSanitizer(
+        enabled=security_config.get("detect_prompt_injection", True),
+    )
+    input_validator = InputValidator(
+        max_length=security_config.get("max_input_length", 4000),
+    )
+
     # 4. Store in bot_data for handler access
     app.bot_data["owner_id"] = owner_id
     app.bot_data["search"] = search
     app.bot_data["llm"] = llm
     app.bot_data["audit"] = audit
     app.bot_data["pool"] = pool
+    app.bot_data["sanitizer"] = sanitizer
+    app.bot_data["input_validator"] = input_validator
 
     # 5. Register handlers with owner filter
     owner_filter = build_owner_filter(owner_id)
