@@ -20,7 +20,7 @@ toml==0.10.2                      # TOML config file parser
 
 # --- Embeddings (optional — only needed for local fallback) ---
 sentence-transformers==3.3.1      # Local embedding model (all-MiniLM-L6-v2)
-torch==2.5.1                      # PyTorch (CPU-only recommended for RPi)
+torch==2.6.0                      # PyTorch (CPU-only recommended for RPi)
 
 # --- Utilities ---
 httpx==0.28.1                     # Async HTTP client (used by anthropic SDK)
