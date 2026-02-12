@@ -131,14 +131,15 @@ async def sync_once(
         if last_id:
             # Incremental sync — only fetch newer messages
             fetch_kwargs["min_id"] = last_id
-        elif max_history_days > 0:
-            # Initial sync — limit how far back we go
-            cutoff = datetime.now(timezone.utc) - timedelta(days=max_history_days)
-            fetch_kwargs["offset_date"] = cutoff
-            logger.info(
-                "Initial sync for chat %s (%s): fetching messages since %s",
-                chat_id, chat_title, cutoff.date(),
-            )
+        else:
+            # Initial sync — fetch the most recent messages (newest first).
+            # batch_size (limit) controls how many we get.
+            # No offset_date needed: Telethon returns newest first by default.
+            if max_history_days > 0:
+                logger.info(
+                    "Initial sync for chat %s (%s): fetching up to %d most recent messages",
+                    chat_id, chat_title, batch_size,
+                )
 
         messages = await client.get_messages(dialog, **fetch_kwargs)
 
